@@ -1,5 +1,5 @@
 import React from 'react'
-import { Routes, Route, NavLink, useNavigate } from 'react-router-dom'
+import { Routes, Route, NavLink, useNavigate, Navigate } from 'react-router-dom'
 import AdminPanel from './components/AdminPanel.jsx'
 import QRDisplay from './components/QRDisplay.jsx'
 import SignInPage from './components/SignInPage.jsx'
@@ -8,24 +8,18 @@ import UsersManager from './components/UsersManager.jsx'
 import { isLoggedIn, getUser, clearAuth } from './auth.js'
 
 function RequireAuth({ children }) {
-  const navigate = useNavigate()
   if (!isLoggedIn()) {
-    navigate('/login', { replace: true })
-    return null
+    return <Navigate to="/login" replace />
   }
   return children
 }
 
 function RequireSuperAdmin({ children }) {
-  const navigate = useNavigate()
-  const user = getUser()
   if (!isLoggedIn()) {
-    navigate('/login', { replace: true })
-    return null
+    return <Navigate to="/login" replace />
   }
-  if (user?.role !== 'super_admin') {
-    navigate('/', { replace: true })
-    return null
+  if (getUser()?.role !== 'super_admin') {
+    return <Navigate to="/" replace />
   }
   return children
 }
