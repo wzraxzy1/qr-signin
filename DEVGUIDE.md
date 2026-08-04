@@ -43,8 +43,9 @@
    conn.row_factory = sqlite3.Row
    ```
    uvicorn 默认多线程，不加会出现间歇性 `database is locked`。
-7. **人数上限存在 TOCTOU 竞态**（`app.py:738-743`）：`COUNT` 与 `INSERT` 之间并发请求可超额。
-   - 修复：在事务内 `BEGIN IMMEDIATE` 写锁，或单条 `INSERT ... WHERE (SELECT COUNT(*)) < max_signins`。
+7. **人数上限存在 TOCTOU 竞态**（原 `app.py:738-743`，现 `routers/signin.py`）：`COUNT` 与 `INSERT` 之间并发请求可超额。
+   - 已修复（2026-08-05）：`conn.isolation_level = None` + 临界区 `BEGIN IMMEDIATE` 抢占写锁，去重/上限/INSERT 原子提交；`try_persist_signin()` 保持单一写路径，并发回归见 `test_capacity_limit_no_toctou_under_concurrency`。
+   - 原则：涉及「先查后写」的计数类逻辑一律放进显式写事务，不要依赖 SQLite 默认 deferred 事务。
 8. SQL 一律参数化（当前已做到，保持）。`field_data` 的 key 虽拼入 `json_extract(field_data, ?)` 但作为绑定值传入，安全；后续重构需保持此模式。
 
 ## 4. 可测试性（P0 团队级）
@@ -90,7 +91,7 @@
 | P0 | 全仓 | 零自动化测试 | ✅ 已建 pytest 套件（test_security + test_signin，12 用例全绿，2026-08-04） |
 | P1 | app.py:47-53 | CORS * + credentials 错误 | ✅ 已修（`allow_origins` 改为显式来源列表，禁止 `*` 与 credentials 共用，2026-08-05） |
 | P1 | app.py:127-130 | SQLite 未开 WAL/busy_timeout | ✅ 已修（WAL + busy_timeout=10s，2026-08-04） |
-| P1 | app.py:738-743 | 人数上限 TOCTOU 竞态 | 待认领 |
+| P1 | signin.py submit_signin | 人数上限 TOCTOU 竞态（COUNT 与 INSERT 间并发可超额） | ✅ 已修（`BEGIN IMMEDIATE` 抢占写锁 + 手动事务边界，去重/上限/INSERT 原子化；临界区抽 `try_persist_signin()` 便于并发回归测试 `test_capacity_limit_no_toctou_under_concurrency`，2026-08-05） |
 | P1 | app.py:748,819 | 身份证号明文落库/导出 | ✅ 已修（导出 CSV 对 id_card 脱敏，保留前4后4，2026-08-04） |
 | P1 | app.py:310 | 登录无限流 | ✅ 已修（按用户名+来源IP双维度内存限流：5次/5分钟窗口，超限锁5分钟，2026-08-04） |
 | P1 | app.py:198 | 默认管理员密码兜底 | ✅ 已修（禁止回退 `admin123`；未设 `DEFAULT_ADMIN_PASSWORD` 时生成一次性随机密码并写入启动日志，不再拒绝启动，2026-08-05） |

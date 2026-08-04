@@ -1,7 +1,9 @@
 """submit_signin 核心逻辑单测：成功 / 复合键去重 / 强唯一字段去重 / 人数上限 / 时间窗口 / token 过期。"""
+import threading
 import time
 
 import app as app_module
+from fastapi.testclient import TestClient
 
 ADMIN = ("admin", "admin123")
 
@@ -105,6 +107,59 @@ def test_capacity_limit(client):
     r2 = _submit(client, sid, t, {"name": "李四", "phone": "2"})
     assert r2.status_code == 409
     assert "已满" in r2.json()["detail"]
+
+
+def test_capacity_limit_no_toctou_under_concurrency(client):
+    """并发竞态回归：max_signins=1 时，两个并发请求必须恰好 1 个成功、1 个 409。
+
+    若临界区未用 BEGIN IMMEDIATE 原子化（TOCTOU），两个请求会同时通过
+    COUNT < max 检查后再各自 INSERT，导致超额（2 个成功）——本用例即失败。
+    修复后 BEGIN IMMEDIATE 抢占写锁，第二个请求必然阻塞到第一个 COMMIT，
+    再看到 COUNT>=max 被拒，结果确定。
+    """
+    token = _login(client)
+    sid = _create_session(client, token, max_signins=1)
+    _seed_token(sid)
+
+    # 两个独立 TestClient（各自持有独立 ASGI portal，避免单 client 跨线程不安全），
+    # 共享同一个 app 与同一份临时 DB 文件。
+    c1 = TestClient(app_module.app)
+    c2 = TestClient(app_module.app)
+
+    barrier = threading.Barrier(2, timeout=5)
+    results = []
+    errors = []
+
+    def worker(client_inst, name):
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            return
+        try:
+            r = client_inst.post(
+                f"/api/sessions/{sid}/signin",
+                json={"token": "TKN", "field_data": {"name": name, "phone": "1"}},
+            )
+            results.append(r.status_code)
+        except Exception as e:  # noqa: BLE001
+            errors.append(repr(e))
+
+    t1 = threading.Thread(target=worker, args=(c1, "张三"))
+    t2 = threading.Thread(target=worker, args=(c2, "李四"))
+    t1.start()
+    t2.start()
+    t1.join(timeout=15)
+    t2.join(timeout=15)
+
+    assert not errors, errors
+    assert sorted(results) == [200, 409], f"并发结果应为 1 成功 1 拒绝，实际: {results}"
+    # 落库必须恰好 1 条，绝不超额
+    conn = app_module.get_db()
+    cnt = conn.execute(
+        "SELECT COUNT(*) FROM signins WHERE session_id = ?", (sid,)
+    ).fetchone()[0]
+    conn.close()
+    assert cnt == 1, f"并发后签到记录数应为 1，实际 {cnt}（TOCTOU 竞态未修复）"
 
 
 def test_time_window_not_started(client):
