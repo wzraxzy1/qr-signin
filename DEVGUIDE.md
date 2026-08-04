@@ -92,7 +92,7 @@
 | P1 | app.py:738-743 | 人数上限 TOCTOU 竞态 | 待认领 |
 | P1 | app.py:748,819 | 身份证号明文落库/导出 | ✅ 已修（导出 CSV 对 id_card 脱敏，保留前4后4，2026-08-04） |
 | P1 | app.py:310 | 登录无限流 | ✅ 已修（按用户名+来源IP双维度内存限流：5次/5分钟窗口，超限锁5分钟，2026-08-04） |
-| P1 | app.py:198 | 默认管理员密码兜底 | ✅ 已修（禁止回退 `admin123`；生产必须 `DEFAULT_ADMIN_PASSWORD`，否则拒绝启动；开发自动生成一次性随机密码，2026-08-05） |
+| P1 | app.py:198 | 默认管理员密码兜底 | ✅ 已修（禁止回退 `admin123`；未设 `DEFAULT_ADMIN_PASSWORD` 时生成一次性随机密码并写入启动日志，不再拒绝启动，2026-08-05） |
 | P1 | 架构 | 单体 852 行未拆分 | ✅ 已拆为 `backend/app/` 包（config/crypto/db/auth_utils/schemas/routers + 门面 `__init__.py`，2026-08-04） |
 | P1 | CI | 无 PR 门禁 | ✅ 已建 .github/workflows/ci.yml（push/PR 自动跑 pytest + 前端 build，2026-08-04） |
 | P1 | 运维 | 无结构化日志 | 待认领 |
@@ -138,7 +138,7 @@ systemctl status qr-signin
 
 #### 8.3.1 生产必填 / 可选环境变量
 - `SECRET_KEY`（必填，生产）：token 签名密钥，缺失则**拒绝启动**。用 `python -c "import secrets;print(secrets.token_hex(32))"` 生成。
-- `DEFAULT_ADMIN_PASSWORD`（必填，生产）：首次启动播种超管的初始密码，缺失则**拒绝启动**（不再回退 `admin123`）。
+- `DEFAULT_ADMIN_PASSWORD`（可选；生产建议设）：首次启动播种超管的初始密码。未设置时**不再回退 `admin123`**，而是生成一次性随机密码并打印到启动日志（仅显示一次），请在管理面板尽快修改。
 - `DEFAULT_ADMIN_USER`（可选，默认 `admin`）：超管用户名。
 - `CORS_ORIGINS`（可选，逗号分隔）：允许跨域访问的前端来源。同源部署（SPA 由本后端挂载）无需设置；仅当浏览器从**不同域名/端口**直连 API 时才需填写，例如 `https://app.example.com,http://localhost:5173`。**切勿设成 `*`**（与 `allow_credentials=True` 冲突，浏览器会拒绝）。
 - `APP_ENV`（可选，默认 `development`）：设为 `production` 时启用上述强制校验；CI/测试用 `test`。
