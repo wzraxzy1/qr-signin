@@ -694,6 +694,28 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
             conn.close()
             raise HTTPException(status_code=409, detail="您已签到，请勿重复签到")
 
+    # Rule 2: per-field uniqueness for the three identity fields
+    # (工号 / 身份证号 / 学号). If ANY of them is filled and already exists in
+    # another sign-in record for this session, reject as a duplicate sign-in.
+    # This catches cases the composite key above misses (e.g. same employee_id
+    # but a typo'd name/phone). The previous composite rule still applies.
+    unique_fields = {
+        "employee_id": "工号",
+        "id_card": "身份证号",
+        "student_number": "学号",
+    }
+    for uf, label in unique_fields.items():
+        val = field_data.get(uf)
+        if val is None or str(val).strip() == "":
+            continue
+        cur.execute(
+            "SELECT id FROM signins WHERE session_id = ? AND json_extract(field_data, ?) = ?",
+            (session_id, f"$.{uf}", str(val)),
+        )
+        if cur.fetchone():
+            conn.close()
+            raise HTTPException(status_code=409, detail=f"该{label}已签到，请勿重复签到")
+
     # Save sign-in
     signin_id = str(uuid.uuid4())[:8]
     client_ip = request.client.host if request.client else "unknown"

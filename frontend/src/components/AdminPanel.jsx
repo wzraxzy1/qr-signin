@@ -7,6 +7,9 @@ const API = '/api'
 const defaultFields = [
   { name: 'name', label: '姓名', type: 'text', required: true },
   { name: 'phone', label: '手机号', type: 'tel', required: true },
+  { name: 'employee_id', label: '工号', type: 'text', required: false },
+  { name: 'id_card', label: '身份证号', type: 'text', required: false },
+  { name: 'student_number', label: '学号', type: 'text', required: false },
 ]
 
 const fieldTypes = [
