@@ -18,6 +18,19 @@ const fieldTypes = [
   { value: 'select', label: '下拉选择' },
 ]
 
+// epoch(秒) <-> datetime-local 字符串（本地时区）
+function epochToLocalInput(epoch) {
+  if (!epoch) return ''
+  const d = new Date(epoch * 1000)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+function localInputToEpoch(val) {
+  if (!val) return null
+  const t = new Date(val).getTime() / 1000
+  return isNaN(t) ? null : t
+}
+
 export default function AdminPanel() {
   const navigate = useNavigate()
   const [sessions, setSessions] = useState([])
@@ -31,6 +44,8 @@ export default function AdminPanel() {
     name: '',
     refresh_interval: 10,
     fields: [...defaultFields],
+    start_at: '',
+    expires_at: '',
   })
 
   const showToast = (msg, type = '') => {
@@ -89,15 +104,25 @@ export default function AdminPanel() {
       return
     }
 
+    // Time window validation
+    const startAt = localInputToEpoch(form.start_at)
+    const expiresAt = localInputToEpoch(form.expires_at)
+    if (startAt && expiresAt && startAt >= expiresAt) {
+      showToast('开始时间必须早于停止时间', 'error')
+      return
+    }
+
     try {
       const res = await axios.post(`${API}/sessions`, {
         name: form.name,
         refresh_interval: form.refresh_interval,
         fields_config: form.fields,
+        start_at: startAt,
+        expires_at: expiresAt,
       })
       showToast('创建成功', 'success')
       setShowCreate(false)
-      setForm({ name: '', refresh_interval: 10, fields: [...defaultFields] })
+      setForm({ name: '', refresh_interval: 10, fields: [...defaultFields], start_at: '', expires_at: '' })
       fetchSessions()
     } catch (err) {
       showToast('创建失败', 'error')
@@ -176,6 +201,34 @@ export default function AdminPanel() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">开始时间（可选）</label>
+              <input
+                className="form-input"
+                type="datetime-local"
+                value={form.start_at}
+                onChange={(e) => setForm({ ...form, start_at: e.target.value })}
+                style={{ maxWidth: 280 }}
+              />
+              <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
+                留空表示不限制，到时间前不可签到
+              </p>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">停止时间（可选）</label>
+              <input
+                className="form-input"
+                type="datetime-local"
+                value={form.expires_at}
+                onChange={(e) => setForm({ ...form, expires_at: e.target.value })}
+                style={{ maxWidth: 280 }}
+              />
+              <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
+                留空表示不限制，到时间后自动停止签到
+              </p>
             </div>
 
             <div className="form-group">
@@ -298,6 +351,28 @@ export default function AdminPanel() {
 function SessionDetail({ session, onBack, showToast }) {
   const [records, setRecords] = useState(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [startInput, setStartInput] = useState(epochToLocalInput(session.start_at))
+  const [endInput, setEndInput] = useState(epochToLocalInput(session.expires_at))
+  const [savingTime, setSavingTime] = useState(false)
+
+  const handleSaveTime = async () => {
+    const sa = localInputToEpoch(startInput)
+    const ea = localInputToEpoch(endInput)
+    if (sa && ea && sa >= ea) {
+      showToast('开始时间必须早于停止时间', 'error')
+      return
+    }
+    setSavingTime(true)
+    try {
+      await axios.put(`${API}/sessions/${session.id}`, { start_at: sa, expires_at: ea })
+      showToast('时间设置已保存', 'success')
+      onBack()
+    } catch (err) {
+      showToast('保存失败', 'error')
+    } finally {
+      setSavingTime(false)
+    }
+  }
 
   useEffect(() => {
     const load = async () => {
@@ -352,6 +427,38 @@ function SessionDetail({ session, onBack, showToast }) {
             <div className="stat-value">{records.fields_config.length}</div>
             <div className="stat-label">字段数量</div>
           </div>
+        </div>
+
+        <div className="card" style={{ marginTop: 20 }}>
+          <div className="card-title"><span>签到时间窗口</span></div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">开始时间（可选）</label>
+              <input
+                className="form-input"
+                type="datetime-local"
+                value={startInput}
+                onChange={(e) => setStartInput(e.target.value)}
+                style={{ maxWidth: 260 }}
+              />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">停止时间（可选）</label>
+              <input
+                className="form-input"
+                type="datetime-local"
+                value={endInput}
+                onChange={(e) => setEndInput(e.target.value)}
+                style={{ maxWidth: 260 }}
+              />
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={handleSaveTime} disabled={savingTime}>
+              {savingTime ? '保存中...' : '保存时间'}
+            </button>
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 10 }}>
+            留空表示不限制。设置后：未到开始时间不可签到、超过停止时间自动停止签到。
+          </p>
         </div>
 
         {records.records.length === 0 ? (

@@ -75,11 +75,18 @@ export default function QRDisplay() {
     ? (countdown / qrData.interval) * 100
     : 0
 
+  const fmtTime = (t) =>
+    t ? new Date(t * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '不限'
+  const windowText = `开始：${fmtTime(session.start_at)} · 停止：${fmtTime(session.expires_at)}`
+
   return (
     <div className="qr-container">
       <div className="qr-card">
         <h2>扫码签到</h2>
         <div className="session-name">{session.name}</div>
+        {(session.start_at || session.expires_at) && (
+          <div className="qr-time-window">{windowText}</div>
+        )}
 
         <div className={`qr-wrapper ${isRefreshing ? 'refreshing' : ''}`}>
           <QRCodeSVG

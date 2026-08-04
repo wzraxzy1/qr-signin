@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import { useSearchParams } from 'react-router-dom'
 
@@ -14,32 +14,58 @@ export default function SignInPage() {
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState(null) // 'success' | 'error' | null
   const [errorMsg, setErrorMsg] = useState('')
+  const [windowMsg, setWindowMsg] = useState('')
   const [formData, setFormData] = useState({})
 
-  // Fetch session info
+  // 评估签到时间窗口：未开始/已结束/已关闭 -> 不允许签到
+  const evaluateWindow = (data) => {
+    const now = Date.now() / 1000
+    if (data.status !== 'active') {
+      setErrorMsg('签到会话已关闭')
+      setResult('error')
+      return false
+    }
+    if (data.start_at && now < data.start_at) {
+      setWindowMsg('签到尚未开始，请在开始时间后签到')
+      return false
+    }
+    if (data.expires_at && now > data.expires_at) {
+      setWindowMsg('签到已结束，无法继续签到')
+      return false
+    }
+    setWindowMsg('')
+    return true
+  }
+
+  // 手机端拉取会话信息（公开接口，无需登录）
+  const fetchSession = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/sessions/${sessionId}/public`)
+      setSession(res.data)
+      evaluateWindow(res.data)
+    } catch (err) {
+      setErrorMsg('签到会话不存在')
+      setResult('error')
+    } finally {
+      setLoading(false)
+    }
+  }, [sessionId])
+
   useEffect(() => {
     if (!sessionId || !token) {
       setLoading(false)
       return
     }
-    const fetchSession = async () => {
-      try {
-        const res = await axios.get(`${API}/sessions/${sessionId}`)
-        if (res.data.status !== 'active') {
-          setErrorMsg('签到会话已关闭')
-          setResult('error')
-        } else {
-          setSession(res.data)
-        }
-      } catch (err) {
-        setErrorMsg('签到会话不存在')
-        setResult('error')
-      } finally {
-        setLoading(false)
-      }
-    }
     fetchSession()
-  }, [sessionId, token])
+  }, [sessionId, token, fetchSession])
+
+  // 未开始时定时轮询，到达开始时间后自动开放表单
+  useEffect(() => {
+    if (windowMsg && windowMsg.includes('尚未开始')) {
+      const t = setInterval(fetchSession, 15000)
+      return () => clearInterval(t)
+    }
+  }, [windowMsg, fetchSession])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -130,6 +156,20 @@ export default function SignInPage() {
                 请重新扫描最新二维码
               </p>
             )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // 未开始 / 已结束
+  if (windowMsg) {
+    return (
+      <div className="signin-container">
+        <div className="signin-card">
+          <div className="signin-success">
+            <div className="success-icon">⏳</div>
+            <h2 style={{ fontSize: 20 }}>{windowMsg}</h2>
           </div>
         </div>
       </div>

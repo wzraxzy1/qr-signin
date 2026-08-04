@@ -181,6 +181,11 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN password_version INTEGER NOT NULL DEFAULT 0")
     except Exception:
         pass  # column already exists
+    # Migration: add start_at column for sign-in start time (optional)
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN start_at REAL")
+    except Exception:
+        pass  # column already exists
     # Create default super admin on first run
     cur.execute("SELECT COUNT(*) as cnt FROM users")
     if cur.fetchone()["cnt"] == 0:
@@ -207,6 +212,7 @@ class SessionCreate(BaseModel):
     name: str
     refresh_interval: int = 10
     fields_config: List[Dict[str, Any]] = []
+    start_at: Optional[float] = None
     expires_at: Optional[float] = None
 
 
@@ -215,6 +221,7 @@ class SessionUpdate(BaseModel):
     refresh_interval: Optional[int] = None
     fields_config: Optional[List[Dict[str, Any]]] = None
     status: Optional[str] = None
+    start_at: Optional[float] = None
     expires_at: Optional[float] = None
 
 
@@ -466,14 +473,15 @@ async def create_session(session: SessionCreate, user: dict = Depends(get_curren
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, expires_at)
-           VALUES (?, ?, ?, ?, 'active', ?, ?)""",
+        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, start_at, expires_at)
+           VALUES (?, ?, ?, ?, 'active', ?, ?, ?)""",
         (
             session_id,
             session.name,
             session.refresh_interval,
             json.dumps(session.fields_config, ensure_ascii=False),
             now,
+            session.start_at,
             session.expires_at,
         ),
     )
@@ -497,6 +505,7 @@ async def list_sessions(user: dict = Depends(get_current_user)):
             "fields_config": json.loads(row["fields_config"]),
             "status": row["status"],
             "created_at": row["created_at"],
+            "start_at": row["start_at"],
             "expires_at": row["expires_at"],
         })
     conn.close()
@@ -523,6 +532,7 @@ async def get_session(session_id: str, user: dict = Depends(get_current_user)):
         "fields_config": json.loads(row["fields_config"]),
         "status": row["status"],
         "created_at": row["created_at"],
+        "start_at": row["start_at"],
         "expires_at": row["expires_at"],
         "sign_in_count": count,
     }
@@ -552,6 +562,9 @@ async def update_session(session_id: str, update: SessionUpdate, user: dict = De
     if update.status is not None:
         updates.append("status = ?")
         params.append(update.status)
+    if update.start_at is not None:
+        updates.append("start_at = ?")
+        params.append(update.start_at)
     if update.expires_at is not None:
         updates.append("expires_at = ?")
         params.append(update.expires_at)
@@ -591,6 +604,27 @@ async def get_qr_info(session_id: str, request: Request, user: dict = Depends(ge
     }
 
 
+@app.get("/api/sessions/{session_id}/public")
+async def get_session_public(session_id: str):
+    """公开接口：供手机签到页加载表单字段，无需登录。
+    仅返回签到所需的最小信息（不含 token、签到记录等敏感数据）。"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "fields_config": json.loads(row["fields_config"]),
+        "status": row["status"],
+        "start_at": row["start_at"],
+        "expires_at": row["expires_at"],
+    }
+
+
 @app.post("/api/sessions/{session_id}/signin")
 async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
     """提交签到"""
@@ -605,8 +639,16 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
         conn.close()
         raise HTTPException(status_code=400, detail="签到已关闭")
 
-    # Validate token - check against token history with grace period
     now = time.time()
+    # Time window enforcement (start_at / expires_at)
+    if row["start_at"] and now < row["start_at"]:
+        conn.close()
+        raise HTTPException(status_code=403, detail="签到尚未开始")
+    if row["expires_at"] and now > row["expires_at"]:
+        conn.close()
+        raise HTTPException(status_code=403, detail="签到已结束")
+
+    # Validate token - check against token history with grace period
     interval = row["refresh_interval"]
     # Token validity: refresh_interval + grace period (for user to fill form)
     token_validity = interval + TOKEN_GRACE_PERIOD
