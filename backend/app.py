@@ -186,6 +186,11 @@ def init_db():
         cur.execute("ALTER TABLE sessions ADD COLUMN start_at REAL")
     except Exception:
         pass  # column already exists
+    # Migration: add max_signins column for capacity limit (optional)
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN max_signins INTEGER")
+    except Exception:
+        pass  # column already exists
     # Create default super admin on first run
     cur.execute("SELECT COUNT(*) as cnt FROM users")
     if cur.fetchone()["cnt"] == 0:
@@ -214,6 +219,7 @@ class SessionCreate(BaseModel):
     fields_config: List[Dict[str, Any]] = []
     start_at: Optional[float] = None
     expires_at: Optional[float] = None
+    max_signins: Optional[int] = None
 
 
 class SessionUpdate(BaseModel):
@@ -223,6 +229,7 @@ class SessionUpdate(BaseModel):
     status: Optional[str] = None
     start_at: Optional[float] = None
     expires_at: Optional[float] = None
+    max_signins: Optional[int] = None
 
 
 class SignInSubmit(BaseModel):
@@ -473,8 +480,8 @@ async def create_session(session: SessionCreate, user: dict = Depends(get_curren
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, start_at, expires_at)
-           VALUES (?, ?, ?, ?, 'active', ?, ?, ?)""",
+        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, start_at, expires_at, max_signins)
+           VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
         (
             session_id,
             session.name,
@@ -483,6 +490,7 @@ async def create_session(session: SessionCreate, user: dict = Depends(get_curren
             now,
             session.start_at,
             session.expires_at,
+            session.max_signins,
         ),
     )
     conn.commit()
@@ -507,6 +515,7 @@ async def list_sessions(user: dict = Depends(get_current_user)):
             "created_at": row["created_at"],
             "start_at": row["start_at"],
             "expires_at": row["expires_at"],
+            "max_signins": row["max_signins"],
         })
     conn.close()
     return {"sessions": sessions}
@@ -534,6 +543,7 @@ async def get_session(session_id: str, user: dict = Depends(get_current_user)):
         "created_at": row["created_at"],
         "start_at": row["start_at"],
         "expires_at": row["expires_at"],
+        "max_signins": row["max_signins"],
         "sign_in_count": count,
     }
 
@@ -568,6 +578,9 @@ async def update_session(session_id: str, update: SessionUpdate, user: dict = De
     if update.expires_at is not None:
         updates.append("expires_at = ?")
         params.append(update.expires_at)
+    if update.max_signins is not None:
+        updates.append("max_signins = ?")
+        params.append(update.max_signins)
 
     if updates:
         params.append(session_id)
@@ -612,9 +625,12 @@ async def get_session_public(session_id: str):
     cur = conn.cursor()
     cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
     row = cur.fetchone()
-    conn.close()
     if not row:
+        conn.close()
         raise HTTPException(status_code=404, detail="Session not found")
+    cur.execute("SELECT COUNT(*) as cnt FROM signins WHERE session_id = ?", (session_id,))
+    count = cur.fetchone()["cnt"]
+    conn.close()
     return {
         "id": row["id"],
         "name": row["name"],
@@ -622,6 +638,8 @@ async def get_session_public(session_id: str):
         "status": row["status"],
         "start_at": row["start_at"],
         "expires_at": row["expires_at"],
+        "max_signins": row["max_signins"],
+        "sign_in_count": count,
     }
 
 
@@ -715,6 +733,14 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
         if cur.fetchone():
             conn.close()
             raise HTTPException(status_code=409, detail=f"该{label}已签到，请勿重复签到")
+
+    # Capacity limit: if max_signins is set and already reached, reject new sign-ins
+    max_signins = row["max_signins"]
+    if max_signins is not None:
+        cur.execute("SELECT COUNT(*) as cnt FROM signins WHERE session_id = ?", (session_id,))
+        if cur.fetchone()["cnt"] >= max_signins:
+            conn.close()
+            raise HTTPException(status_code=409, detail=f"签到人数已满（上限 {max_signins} 人）")
 
     # Save sign-in
     signin_id = str(uuid.uuid4())[:8]

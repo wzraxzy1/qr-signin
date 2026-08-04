@@ -33,6 +33,10 @@ export default function SignInPage() {
       setWindowMsg('签到已结束，无法继续签到')
       return false
     }
+    if (data.max_signins != null && data.sign_in_count >= data.max_signins) {
+      setWindowMsg(`签到人数已满（上限 ${data.max_signins} 人），无法继续签到`)
+      return false
+    }
     setWindowMsg('')
     return true
   }

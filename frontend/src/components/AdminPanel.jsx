@@ -66,6 +66,7 @@ export default function AdminPanel() {
     fields: [...defaultFields],
     start_at: '',
     expires_at: '',
+    max_signins: '',
   })
 
   const showToast = (msg, type = '') => {
@@ -139,16 +140,18 @@ export default function AdminPanel() {
     }
 
     try {
+      const maxVal = form.max_signins === '' ? null : parseInt(form.max_signins, 10)
       const res = await axios.post(`${API}/sessions`, {
         name: form.name,
         refresh_interval: form.refresh_interval,
         fields_config: form.fields,
         start_at: startAt,
         expires_at: expiresAt,
+        max_signins: isNaN(maxVal) ? null : maxVal,
       })
       showToast('创建成功', 'success')
       setShowCreate(false)
-      setForm({ name: '', refresh_interval: 10, fields: [...defaultFields], start_at: '', expires_at: '' })
+      setForm({ name: '', refresh_interval: 10, fields: [...defaultFields], start_at: '', expires_at: '', max_signins: '' })
       fetchSessions()
     } catch (err) {
       showToast('创建失败', 'error')
@@ -258,6 +261,22 @@ export default function AdminPanel() {
             </div>
 
             <div className="form-group">
+              <label className="form-label">最多签到人数（可选）</label>
+              <input
+                className="form-input"
+                type="number"
+                min="1"
+                placeholder="不限制"
+                value={form.max_signins}
+                onChange={(e) => setForm({ ...form, max_signins: e.target.value })}
+                style={{ maxWidth: 200 }}
+              />
+              <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
+                留空表示不限制；填写正整数后，签到达到该人数将自动拒绝新签到
+              </p>
+            </div>
+
+            <div className="form-group">
               <label className="form-label">签到字段配置</label>
               {form.fields.map((field, i) => (
                 <div key={i} className="field-config-item">
@@ -324,6 +343,7 @@ export default function AdminPanel() {
                 <th>刷新间隔</th>
                 <th>创建时间</th>
                 <th>签到时间窗口</th>
+                <th>人数上限</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
@@ -340,6 +360,7 @@ export default function AdminPanel() {
                     开始 {fmtWindowTime(s.start_at)}<br />
                     停止 {fmtWindowTime(s.expires_at)}
                   </td>
+                  <td>{s.max_signins != null ? `${s.max_signins} 人` : '不限制'}</td>
                   <td>
                     <span className={`badge ${st.cls}`}>{st.label}</span>
                   </td>
@@ -385,6 +406,7 @@ function SessionDetail({ session, onBack, showToast }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const [startInput, setStartInput] = useState(epochToLocalInput(session.start_at))
   const [endInput, setEndInput] = useState(epochToLocalInput(session.expires_at))
+  const [maxInput, setMaxInput] = useState(session.max_signins != null ? String(session.max_signins) : '')
   const [savingTime, setSavingTime] = useState(false)
 
   const handleSaveTime = async () => {
@@ -394,9 +416,18 @@ function SessionDetail({ session, onBack, showToast }) {
       showToast('开始时间必须早于停止时间', 'error')
       return
     }
+    const maxVal = maxInput === '' ? null : parseInt(maxInput, 10)
+    if (maxInput !== '' && (isNaN(maxVal) || maxVal < 1)) {
+      showToast('最多签到人数需为正整数', 'error')
+      return
+    }
     setSavingTime(true)
     try {
-      await axios.put(`${API}/sessions/${session.id}`, { start_at: sa, expires_at: ea })
+      await axios.put(`${API}/sessions/${session.id}`, {
+        start_at: sa,
+        expires_at: ea,
+        max_signins: maxVal,
+      })
       showToast('时间设置已保存', 'success')
       onBack()
     } catch (err) {
@@ -480,10 +511,16 @@ function SessionDetail({ session, onBack, showToast }) {
             <div className="stat-value">{records.fields_config.length}</div>
             <div className="stat-label">字段数量</div>
           </div>
+          <div className="stat-card">
+            <div className="stat-value">
+              {session.max_signins != null ? `${records.total} / ${session.max_signins}` : records.total}
+            </div>
+            <div className="stat-label">签到进度</div>
+          </div>
         </div>
 
         <div className="card" style={{ marginTop: 20 }}>
-          <div className="card-title"><span>签到时间窗口</span></div>
+          <div className="card-title"><span>签到时间窗口与人数上限</span></div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">开始时间（可选）</label>
@@ -505,12 +542,24 @@ function SessionDetail({ session, onBack, showToast }) {
                 style={{ maxWidth: 260 }}
               />
             </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">最多签到人数（可选）</label>
+              <input
+                className="form-input"
+                type="number"
+                min="1"
+                placeholder="不限制"
+                value={maxInput}
+                onChange={(e) => setMaxInput(e.target.value)}
+                style={{ maxWidth: 200 }}
+              />
+            </div>
             <button className="btn btn-primary btn-sm" onClick={handleSaveTime} disabled={savingTime}>
-              {savingTime ? '保存中...' : '保存时间'}
+              {savingTime ? '保存中...' : '保存设置'}
             </button>
           </div>
           <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 10 }}>
-            留空表示不限制。设置后：未到开始时间不可签到、超过停止时间自动停止签到。
+            时间留空表示不限制：未到开始时间不可签到、超过停止时间自动停止签到。人数上限留空表示不限制，填写正整数后达到上限将自动拒绝新签到。
           </p>
         </div>
 
