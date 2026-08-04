@@ -135,3 +135,53 @@ sudo systemctl restart qr-signin
 systemctl status qr-signin
 ```
 > 注意：如果改了 `frontend/`（前端）才需要 `cd frontend && npm run build` 重新构建；纯后端改动只 restart 服务即可，因为 `uvicorn app:app` 启动契约保持不变。
+
+### 8.4 常见部署坑（踩过即记，下次直接查表）
+
+#### 坑 1：本地 8000 端口被旧 uvicorn 占用（改了代码但新接口一直 404）
+**现象**：改完 `routers/` 后本地起服务，请求新接口返回 `404`，但代码明明已经写好。
+**根因**：上一次启动的 uvicorn 进程还活着，新的服务根本没起来（或起在了别的端口），请求打到的还是旧进程。Windows 上会直接报 `OSError: [WinError 10048] 通常每个套接字地址只允许使用一次`。
+**排查 / 修复（Windows PowerShell）**：
+```powershell
+# 查谁占了 8000
+$pid = (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue).OwningProcess
+if ($pid) { Stop-Process -Id $pid -Force; Start-Sleep 1 }
+# 再用 --reload 起，代码改动会自动重载，不用反复手动重启
+python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+```
+**Linux 服务器同理**：
+```bash
+pkill -f "uvicorn app:app"; sleep 1
+sudo systemctl restart qr-signin
+```
+**防呆**：本地开发一律加 `--reload`；部署后改完代码必须 `restart`，否则新接口永远 404。
+
+#### 坑 2：服务器重启后 `Failed to restart qr-signin.service: Unit qr-signin.service not found`
+**现象**：`sudo systemctl restart qr-signin` 报 `Unit qr-signin.service not found`，服务根本没注册。
+**根因**：systemd 的 unit 文件 `/etc/systemd/system/qr-signin.service` 从未创建（或机器重装/迁移后丢失）。
+**修复（SSH 到服务器后执行）**：
+```bash
+sudo tee /etc/systemd/system/qr-signin.service > /dev/null <<'EOF'
+[Unit]
+Description=QR Sign-in Backend
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/qr-signin/backend
+Environment=PYTHONUNBUFFERED=1
+Environment=SECRET_KEY=$(cat /opt/qr-signin/.secret_key 2>/dev/null)
+ExecStart=/opt/qr-signin/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable qr-signin
+sudo systemctl restart qr-signin
+# 验证
+curl -s http://localhost:8000/api/health   # 期望 {"status":"ok"}
+systemctl status qr-signin
+```
+> 注：`WorkingDirectory` 与 `ExecStart` 里的路径要和服务器实际目录一致；`SECRET_KEY` 走 `.secret_key` 文件，生产环境缺失会直接启动失败（见 `app/config.py` 的强制校验）。
