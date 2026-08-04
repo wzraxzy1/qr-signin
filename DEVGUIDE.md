@@ -86,6 +86,7 @@
 | 优先级 | 位置 | 问题 | 状态 |
 |---|---|---|---|
 | P0 | app.py:26 | SECRET_KEY 硬编码默认 | ✅ 已修（生产强制校验+开发临时密钥，2026-08-04） |
+| P0 | config.py:36 | FRONTEND_DIST 路径少往上一层，SPA 路由全没注册，GET / 404 | ✅ 已修（_project_root = grandparent of config.py；显式 @app.get("/") 根路由；test_spa.py 回归，2026-08-05） |
 | P0 | 全仓 | 零自动化测试 | ✅ 已建 pytest 套件（test_security + test_signin，12 用例全绿，2026-08-04） |
 | P1 | app.py:47-53 | CORS * + credentials 错误 | ✅ 已修（`allow_origins` 改为显式来源列表，禁止 `*` 与 credentials 共用，2026-08-05） |
 | P1 | app.py:127-130 | SQLite 未开 WAL/busy_timeout | ✅ 已修（WAL + busy_timeout=10s，2026-08-04） |
@@ -194,3 +195,20 @@ curl -s http://localhost:8000/api/health   # 期望 {"status":"ok"}
 systemctl status qr-signin
 ```
 > 注：`WorkingDirectory` 与 `ExecStart` 里的路径要和服务器实际目录一致；`SECRET_KEY` 走 `.secret_key` 文件，生产环境缺失会直接启动失败（见 `app/config.py` 的强制校验）。
+
+#### 坑 3：服务跑着、`/api/health` 也是 200，但浏览器打开首页全空白/404
+**现象**：服务正常（`curl /api/health` → `{"status":"ok"}`），但访问 `http://<服务器>:8000/` 或浏览器打开页面是空白或 404。**API 能调但 SPA 打不开**。
+**根因**（任一即可触发）：
+1. `FRONTEND_DIST` 路径错（`config.py` 的 `_project_root` 少往上一层）→ 找不到 `frontend/dist`，SPA 路由压根不注册，所有非 API 路径全 404。
+2. 只有 `@app.get("/{full_path:path}")` 而没有显式的 `@app.get("/")` → 首页空路径不匹配，404（`path` 转换器要求至少一个字符）。
+3. 服务器/本地没构建前端：`frontend/dist/` 不存在。
+**排查**：
+```bash
+# 在服务器上
+ls /opt/qr-signin/frontend/dist/index.html    # 必须存在；否则 cd frontend && npm run build
+curl -sI http://localhost:8000/                # 期望 200 + Content-Type: text/html
+```
+**修复**：
+- 修代码：`config._project_root` 取 `grandparent(config.py)`；`__init__.py` 显式注册 `@app.get("/")`。
+- 服务器构建：`cd /opt/qr-signin/frontend && npm run build`（看 deploy 脚本是否已包含）。
+- 验证：`curl -s http://localhost:8000/` 首行应是 `<!DOCTYPE html>` 或 `<html`。
