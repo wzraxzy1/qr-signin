@@ -51,7 +51,7 @@
 
 ## 5. CI / PR 门禁（P1）
 
-11. 加 `.github/workflows/ci.yml`：push/PR 时跑 `pytest` + 前端 `npm run build`。
+11. ✅ 已建 `.github/workflows/ci.yml`：push/PR 自动跑两个 job——`backend-tests`（`pip install -r requirements` + `pytest`，`APP_ENV=test` 用临时 DB 隔离）与 `frontend-build`（`npm ci` + `vite build`）。任一失败即阻断合并/部署。
 12. **PR 门禁清单（提交前自查）**：
     - [ ] 后端 `python -m py_compile` 通过；`pytest` 全绿
     - [ ] 前端 `npm run build` 通过
@@ -87,7 +87,7 @@
 | P1 | app.py:310 | 登录无限流 | ✅ 已修（按用户名+来源IP双维度内存限流：5次/5分钟窗口，超限锁5分钟，2026-08-04） |
 | P1 | app.py:198 | 默认管理员密码兜底 | 待认领 |
 | P1 | 架构 | 单体 852 行未拆分 | 待认领 |
-| P1 | CI | 无 PR 门禁 | 待认领（需加 .github/workflows/ci.yml） |
+| P1 | CI | 无 PR 门禁 | ✅ 已建 .github/workflows/ci.yml（push/PR 自动跑 pytest + 前端 build，2026-08-04） |
 | P1 | 运维 | 无结构化日志 | 待认领 |
 | P2 | app.py:109-116 | get_current_user 每次请求开 DB 连接 | 待认领 |
 | P2 | schemas | field_data 无长度校验 | 待认领 |
