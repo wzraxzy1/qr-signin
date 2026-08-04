@@ -258,6 +258,18 @@ export default function AdminPanel() {
               <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
                 留空表示不限制，到时间后自动停止签到
               </p>
+              {form.start_at && form.expires_at && (() => {
+                const sT = localInputToEpoch(form.start_at)
+                const eT = localInputToEpoch(form.expires_at)
+                if (sT && eT && eT > sT && eT - sT < 3600) {
+                  return (
+                    <p style={{ fontSize: 12, color: 'var(--warning)', marginTop: 4 }}>
+                      ⚠️ 开始到停止仅 {Math.round((eT - sT) / 60)} 分钟，到达停止时间后签到将自动结束，请确认是否符合预期
+                    </p>
+                  )
+                }
+                return null
+              })()}
             </div>
 
             <div className="form-group">

@@ -19,6 +19,8 @@ export default function SignInPage() {
   // 同一二维码(同 session+token)签到成功后标记，返回上一页再次进入时直接展示“已签到”，
   // 防止“签到完返回不重新扫码又提交一次”的重复签到漏洞。
   const [alreadySigned, setAlreadySigned] = useState(false)
+  // 已签到卡片上展示的具体原因（默认文案兜底；409 时展示后端返回的真实原因）
+  const [signedNote, setSignedNote] = useState('')
   const signedKey = `qr_signin_signed_${sessionId}_${token}`
 
   // 评估签到时间窗口：未开始/已结束/已关闭 -> 不允许签到
@@ -67,6 +69,7 @@ export default function SignInPage() {
     // 该二维码已成功签到过 -> 直接展示“已签到”，不再出现表单
     if (localStorage.getItem(signedKey) === '1') {
       setAlreadySigned(true)
+      setSignedNote('该二维码已成功签到，请勿重复签到。')
       setLoading(false)
       return
     }
@@ -109,10 +112,18 @@ export default function SignInPage() {
       const detail = err.response?.data?.detail || '签到失败'
       const status = err.response?.status
       if (status === 409) {
-        // 该二维码已被使用（重复签到）-> 记为“已签到”，本次直接展示已签到卡片；
-        // 同时写入 localStorage，下次进入同一链接直接命中 alreadySigned 分支。
+        // 409 分两类，不能一概而论：
+        // ① 人数已满 —— 用户并未签到成功，按普通失败展示（绝不标“已签到”）；
+        // ② 该身份已签到（同 token 一码一签 / 身份证/工号等强唯一字段重复）——
+        //    写“已签到”标记防再次提交，并展示后端返回的真实原因，避免误导。
+        if (detail.includes('已满')) {
+          setErrorMsg(detail)
+          setResult('error')
+          return
+        }
         localStorage.setItem(signedKey, '1')
         setAlreadySigned(true)
+        setSignedNote(detail)
         setErrorMsg('')
         setResult(null)
         return
@@ -160,7 +171,7 @@ export default function SignInPage() {
             <div className="success-icon">✅</div>
             <h2>您已签到</h2>
             <p style={{ color: 'var(--text-light)', marginTop: 8 }}>
-              该二维码已成功签到，请勿重复签到。
+              {signedNote || '该二维码已成功签到，请勿重复签到。'}
             </p>
             <p style={{ fontSize: 13, marginTop: 8, color: 'var(--warning)' }}>
               如需为他人签到，请重新扫描最新二维码
