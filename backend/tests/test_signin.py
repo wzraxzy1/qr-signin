@@ -101,24 +101,38 @@ def test_anonymous_token_single_use(client):
     assert _submit(client, sid, t2, {}).status_code == 200
 
 
-def test_token_single_use_universal_fields(client):
-    """回归（用户报"返回上一页不扫码再次签到"）：带字段表单同 token 二次提交，
-    即使改了字段值也必须 409——之前只查身份去重，改任意字段即可绕过。"""
+def test_multi_user_same_qr_code_allowed(client):
+    """多人共码核心回归（用户问"多个用户扫同一个二维码会不会冲突"）：
+    带字段会话，同一张二维码(token)允许多个不同身份签到；同一身份重复签(409)。"""
     token = _login(client)
     sid = _create_session(client, token)
     t = _seed_token(sid)
+    # 第 1 人
     assert _submit(client, sid, t, {"name": "张三", "phone": "1"}).status_code == 200
-    # 返回上一页后改了手机号再提交（身份字段不同，身份去重拦不住）
-    r2 = _submit(client, sid, t, {"name": "张三", "phone": "2"})
-    assert r2.status_code == 409
-    assert "该二维码已签到" in r2.json()["detail"]
-    # 再补一刀：填全新身份也拦（同 token 一律单次使用）
-    r3 = _submit(client, sid, t, {"name": "李四", "phone": "3"})
-    assert r3.status_code == 409
+    # 第 2 人（同一 token、不同身份）-> 必须成功，不能互相挤掉
+    assert _submit(client, sid, t, {"name": "李四", "phone": "2"}).status_code == 200
+    # 第 3 人
+    assert _submit(client, sid, t, {"name": "王五", "phone": "3"}).status_code == 200
+    # 同一人(完全同身份)重复签 -> 409（同 token / 跨 token 重扫均拦）
+    assert _submit(client, sid, t, {"name": "张三", "phone": "1"}).status_code == 409
+    t2 = _seed_token(sid, token_value="TKN2")
+    assert _submit(client, sid, t2, {"name": "张三", "phone": "1"}).status_code == 409
+    # 语义边界：改个别字段(如改手机号) -> 复合键不同且无强唯一字段 -> 视为"不同人"放行。
+    # 后端无法区分"同一人改号"与"同名不同人"，属多人共码的固有边界，
+    # 同一设备重复进入由前端 localStorage 守卫兜底；若要严格拦，会话需配置
+    # 强唯一字段(工号/身份证号/学号)，见 test_unique_field_employee_id。
+    assert _submit(client, sid, t, {"name": "张三", "phone": "9"}).status_code == 200
+    # 落库 4 人（张三/李四/王五 + 张三改号）
+    conn = app_module.get_db()
+    cnt = conn.execute(
+        "SELECT COUNT(*) FROM signins WHERE session_id = ?", (sid,)
+    ).fetchone()[0]
+    conn.close()
+    assert cnt == 4
 
 
-def test_token_single_use_anonymous_to_fields(client):
-    """回归：匿名签到成功后，同一 token 改带字段再次提交 -> 409（匿名↔带字段互转绕过）。"""
+def test_anonymous_session_rejects_fabricated_fields(client):
+    """匿名会话(无字段)即使伪造带字段提交，同一 token 二次仍 409（一码一签）。"""
     token = _login(client)
     sid = _create_session(client, token, fields_config=[])
     t = _seed_token(sid)

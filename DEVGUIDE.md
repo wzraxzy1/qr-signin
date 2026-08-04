@@ -100,7 +100,7 @@
 | P1 | 运维 | 无结构化日志 | 待认领 |
 | P2 | app.py:109-116 | get_current_user 每次请求开 DB 连接 | 待认领 |
 | P2 | schemas | field_data 无长度校验 | 待认领 |
-| P1 | signin | 签到后返回上一页可重复签到（原仅匿名表单去重，带字段表单换字段值即可绕过） | ✅ 已修（**同一 token 统一单次使用**——无条件前置检查 `signins WHERE session_id AND token`，身份去重保留用于跨 token 重签；前端 localStorage「已签到」守卫 + 409 时写标记并展示已签到；`test_token_single_use_universal_fields` 等 4 条回归，变异验证通过，2026-08-05） |
+| P1 | signin | 签到后返回上一页可重复签到（原仅匿名表单去重，带字段表单换字段值即可绕过） | ✅ 已修（**多人共码语义**：匿名会话(无字段)一码一签；带字段会话按身份去重——同身份(含跨 token 重扫)重复签 409，不同身份共用一码放行；前端 localStorage「已签到」守卫 + 409 写标记；`test_multi_user_same_qr_code_allowed` 等回归，双变异验证通过，2026-08-05） |
 
 ---
 

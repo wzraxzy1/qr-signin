@@ -40,30 +40,56 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
     """
     cur = conn.cursor()
 
-    # ============ 反重复签到 ============
-    # 规则1（统一，最高优先）：同一 token 在同一 session 只能成功签到一次。
-    # 之前该检查只在「匿名表单(无字段)」分支生效，导致带字段的表单可以通过
-    # “返回上一页后改任意字段值 / 匿名↔带字段互转”绕过身份去重再次签到。
-    # 现在无条件前置：一张二维码 = 一次有效签到，重签必须等二维码刷新重扫。
-    # （身份去重规则2/3 仍保留，用于拦截“重扫新码后同一人再次签到”。）
-    cur.execute(
-        "SELECT id FROM signins WHERE session_id = ? AND token = ?",
-        (session_row["id"], token),
-    )
-    if cur.fetchone():
-        raise _RejectSignin(
-            409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
-        )
+    # ============ 反重复签到（多人共码语义）============
+    # 产品规则：同一张二维码允许「多个不同的人」签到（大屏一码多人扫），
+    # 只拦截「同一个人重复签到」。区分依据是会话是否配置了表单字段：
+    #   - 匿名会话（fields_config 为空）→ 无法识别身份 → 同一 token 只能成功一次；
+    #   - 多人会话（配置了字段）→ 按身份去重，同一身份（含跨 token 重扫）重复签才拦。
+    try:
+        fields_config = json.loads(session_row["fields_config"] or "[]")
+    except (ValueError, TypeError):
+        fields_config = []
+    has_form_fields = bool(fields_config)
 
-    # 规则2：同一身份(姓名/手机/工号等)在同一会话只能签到一次；跨 token(重新扫码)也拦。
+    def _token_already_used():
+        """同一 token 在同一 session 是否已成功签到过。"""
+        cur.execute(
+            "SELECT id FROM signins WHERE session_id = ? AND token = ?",
+            (session_row["id"], token),
+        )
+        return cur.fetchone() is not None
+
+    if not has_form_fields:
+        # 匿名会话：一码一签，提交什么内容都一样（恶意伪造字段也拦）。
+        if _token_already_used():
+            raise _RejectSignin(
+                409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
+            )
+        return _insert_signin(conn, session_row, token, field_data, now, client_ip)
+
+    # ---- 多人会话：身份去重 ----
+    # 身份候选字段非空值 -> 复合键去重
     identity_candidates = ["employee_id", "phone", "name"]
     key_fields = [
         c for c in identity_candidates
         if c in field_data and str(field_data.get(c, "")).strip() != ""
     ]
-    if not key_fields and field_data:
-        # 没有任何标准身份字段，但收集了其它字段 -> 用全部字段做复合去重
-        key_fields = list(field_data.keys())
+    if not key_fields:
+        # 没有任何标准身份字段被填写：退而用「其它非空字段」做复合去重
+        # （如只配置了"部门"下拉的会话，不同部门视为不同人）。
+        non_empty = {
+            k: v for k, v in field_data.items()
+            if str(v).strip() != ""
+        }
+        if not non_empty:
+            # 什么都没填（全空/空对象）-> 无法识别身份 -> 视同匿名，一码一签
+            if _token_already_used():
+                raise _RejectSignin(
+                    409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
+                )
+            return _insert_signin(conn, session_row, token, field_data, now, client_ip)
+        key_fields = list(non_empty.keys())
+
     if key_fields:
         where = " AND ".join("json_extract(field_data, ?) = ?" for _ in key_fields)
         params = [session_row["id"]]
@@ -77,7 +103,7 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
         if cur.fetchone():
             raise _RejectSignin(409, "您已签到，请勿重复签到")
 
-    # 规则3：单字段唯一性（工号 / 身份证号 / 学号）。
+    # 单字段唯一性（工号 / 身份证号 / 学号）。
     # 若任一字段已存在于本会话其它签到记录则判重复，兜住复合键漏判的情况
     # （如同工号但姓名/手机填错）。
     unique_fields = {
@@ -96,7 +122,16 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
         if cur.fetchone():
             raise _RejectSignin(409, f"该{label}已签到，请勿重复签到")
 
-    # 人数上限：与 INSERT 同处一个写事务，原子执行，杜绝并发超额（TOCTOU 修复点）
+    return _insert_signin(conn, session_row, token, field_data, now, client_ip)
+
+
+def _insert_signin(conn, session_row, token, field_data, now, client_ip):
+    """人数上限检查 + INSERT（事务由调用方统一 COMMIT/ROLLBACK）。
+
+    人数上限与 INSERT 同处一个写事务，原子执行，杜绝并发超额（TOCTOU 修复点）。
+    返回 signin_id。
+    """
+    cur = conn.cursor()
     max_signins = session_row["max_signins"]
     if max_signins is not None:
         cur.execute(
@@ -106,7 +141,6 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
         if cur.fetchone()["cnt"] >= max_signins:
             raise _RejectSignin(409, f"签到人数已满（上限 {max_signins} 人）")
 
-    # 写入
     signin_id = str(uuid.uuid4())[:8]
     cur.execute(
         """INSERT INTO signins (id, session_id, token, field_data, sign_in_time, ip_address)
