@@ -225,6 +225,11 @@ class UserUpdate(BaseModel):
     is_active: Optional[int] = None
 
 
+class ChangePassword(BaseModel):
+    old_password: str
+    new_password: str
+
+
 # ==================== Token Management ====================
 def get_current_token(session_id: str) -> dict:
     """获取当前有效 token，如果过期则生成新的"""
@@ -312,6 +317,32 @@ async def auth_me(user: dict = Depends(get_current_user)):
         "is_active": row["is_active"],
         "created_at": row["created_at"],
     }
+
+
+@app.post("/api/users/me/change-password")
+async def change_my_password(data: ChangePassword, user: dict = Depends(get_current_user)):
+    """用户自助修改密码（需验证当前密码，任何登录用户可用）"""
+    if len(data.new_password) < 6:
+        raise HTTPException(status_code=400, detail="新密码至少 6 位")
+    if data.old_password == data.new_password:
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE id = ?", (user["uid"],))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=401, detail="用户不存在")
+    if not verify_password(data.old_password, row["password_hash"]):
+        conn.close()
+        raise HTTPException(status_code=400, detail="当前密码错误")
+    cur.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (hash_password(data.new_password), user["uid"]),
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "updated"}
 
 
 # ==================== User Management (Super Admin only) ====================

@@ -1,10 +1,11 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Routes, Route, NavLink, useNavigate, Navigate } from 'react-router-dom'
 import AdminPanel from './components/AdminPanel.jsx'
 import QRDisplay from './components/QRDisplay.jsx'
 import SignInPage from './components/SignInPage.jsx'
 import Login from './components/Login.jsx'
 import UsersManager from './components/UsersManager.jsx'
+import ChangePasswordModal from './components/ChangePasswordModal.jsx'
 import { isLoggedIn, getUser, clearAuth } from './auth.js'
 
 function RequireAuth({ children }) {
@@ -28,6 +29,7 @@ function App() {
   const navigate = useNavigate()
   const user = getUser()
   const loggedIn = isLoggedIn()
+  const [showPwdModal, setShowPwdModal] = useState(false)
 
   const handleLogout = () => {
     if (!window.confirm('确定退出登录吗？')) return
@@ -59,6 +61,7 @@ function App() {
               )}
               <span className="nav-user">
                 {user?.username}
+                <button className="nav-logout" onClick={() => setShowPwdModal(true)}>修改密码</button>
                 <button className="nav-logout" onClick={handleLogout}>退出</button>
               </span>
             </>
@@ -95,6 +98,12 @@ function App() {
           />
         </Routes>
       </div>
+      {showPwdModal && (
+        <ChangePasswordModal
+          mode="self"
+          onClose={() => setShowPwdModal(false)}
+        />
+      )}
     </div>
   )
 }

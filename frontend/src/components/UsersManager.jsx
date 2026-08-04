@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import { getUser } from '../auth.js'
+import ChangePasswordModal from './ChangePasswordModal.jsx'
 
 const API = '/api'
 
@@ -15,6 +16,7 @@ export default function UsersManager() {
   const [showCreate, setShowCreate] = useState(false)
   const [form, setForm] = useState({ username: '', password: '', role: 'admin' })
   const [editing, setEditing] = useState(null) // {id, role, is_active}
+  const [resetTarget, setResetTarget] = useState(null) // {id, username}
   const [toast, setToast] = useState(null)
 
   const currentUser = getUser()
@@ -70,19 +72,8 @@ export default function UsersManager() {
     }
   }
 
-  const handleResetPassword = async (id) => {
-    const newPass = window.prompt('请输入新密码（至少 6 位）：')
-    if (!newPass) return
-    if (newPass.length < 6) {
-      showToast('密码至少 6 位', 'error')
-      return
-    }
-    try {
-      await axios.put(`${API}/users/${id}`, { password: newPass })
-      showToast('密码已重置', 'success')
-    } catch (err) {
-      showToast(err.response?.data?.detail || '重置失败', 'error')
-    }
+  const handleResetPassword = (user) => {
+    setResetTarget({ id: user.id, username: user.username })
   }
 
   const handleDelete = async (user) => {
@@ -222,7 +213,7 @@ export default function UsersManager() {
                         编辑
                       </button>
                     )}
-                    <button className="btn btn-secondary btn-sm" onClick={() => handleResetPassword(u.id)}>
+                    <button className="btn btn-secondary btn-sm" onClick={() => handleResetPassword(u)}>
                       重置密码
                     </button>
                     <button
@@ -241,6 +232,15 @@ export default function UsersManager() {
         </table>
       )}
       </div>
+      {resetTarget && (
+        <ChangePasswordModal
+          mode="reset"
+          userId={resetTarget.id}
+          username={resetTarget.username}
+          onClose={() => setResetTarget(null)}
+          onSuccess={() => showToast('密码已重置', 'success')}
+        />
+      )}
     </div>
   )
 }
