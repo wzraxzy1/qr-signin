@@ -156,3 +156,9 @@ else
 fi
 
 echo "==> 查看运行状态： systemctl status $APP_NAME"
+
+# 如果是以 sudo 运行的，把代码目录归还给操作员，方便后续 git pull / npm 升级
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+  chown -R "$SUDO_USER":"$SUDO_USER" "$APP_DIR" 2>/dev/null || true
+  echo "==> 已将 $APP_DIR 所有权归还给用户 $SUDO_USER（后续升级无需 chown）"
+fi
