@@ -31,6 +31,22 @@ function localInputToEpoch(val) {
   return isNaN(t) ? null : t
 }
 
+// 计算会话实际可签到状态（综合 status 字段与时间窗口）
+function sessionStatus(s, nowMs) {
+  const now = nowMs / 1000
+  if (s.status !== 'active') return { label: '已关闭', cls: 'badge-closed' }
+  if (s.start_at && now < s.start_at) return { label: '未开始', cls: 'badge-pending' }
+  if (s.expires_at && now > s.expires_at) return { label: '已结束', cls: 'badge-closed' }
+  return { label: '进行中', cls: 'badge-active' }
+}
+
+function fmtWindowTime(t) {
+  if (!t) return '不限'
+  return new Date(t * 1000).toLocaleString('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  })
+}
+
 export default function AdminPanel() {
   const navigate = useNavigate()
   const [sessions, setSessions] = useState([])
@@ -38,6 +54,7 @@ export default function AdminPanel() {
   const [showCreate, setShowCreate] = useState(false)
   const [viewSession, setViewSession] = useState(null)
   const [toast, setToast] = useState(null)
+  const [nowTick, setNowTick] = useState(Date.now())
 
   // Create form state
   const [form, setForm] = useState({
@@ -67,6 +84,12 @@ export default function AdminPanel() {
   useEffect(() => {
     fetchSessions()
   }, [fetchSessions])
+
+  // 每 30 秒刷新一次，使列表中的时间窗口状态（未开始/进行中/已结束）保持实时
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 30000)
+    return () => clearInterval(t)
+  }, [])
 
   const updateField = (index, key, value) => {
     const fields = [...form.fields]
@@ -297,20 +320,25 @@ export default function AdminPanel() {
                 <th>会话名称</th>
                 <th>刷新间隔</th>
                 <th>创建时间</th>
+                <th>签到时间窗口</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              {sessions.map((s) => (
+              {sessions.map((s) => {
+                const st = sessionStatus(s, nowTick)
+                return (
                 <tr key={s.id}>
                   <td>{s.name}</td>
                   <td>{s.refresh_interval}s</td>
                   <td>{new Date(s.created_at * 1000).toLocaleString('zh-CN')}</td>
+                  <td style={{ fontSize: 13, color: 'var(--text-light)' }}>
+                    开始 {fmtWindowTime(s.start_at)}<br />
+                    停止 {fmtWindowTime(s.expires_at)}
+                  </td>
                   <td>
-                    <span className={`badge ${s.status === 'active' ? 'badge-active' : 'badge-closed'}`}>
-                      {s.status === 'active' ? '进行中' : '已关闭'}
-                    </span>
+                    <span className={`badge ${st.cls}`}>{st.label}</span>
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: 6 }}>
@@ -338,7 +366,8 @@ export default function AdminPanel() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         )}

@@ -445,6 +445,11 @@ body {
   color: #991b1b;
 }
 
+.badge-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
 /* ===== QR Display ===== */
 .qr-container {
   display: flex;
