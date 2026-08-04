@@ -320,6 +320,12 @@ export default function AdminPanel() {
               <button className="btn btn-secondary btn-sm" onClick={addField} style={{ marginTop: 8 }}>
                 + 添加字段
               </button>
+              <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 8, lineHeight: 1.6 }}>
+                💡 <strong>防重复签到：</strong>若需确保「同一个人改了姓名/手机号也无法再次签到」，
+                请配置一个<strong>强唯一字段</strong>（字段标识填 <code>employee_id</code> 工号、
+                <code>id_card</code> 身份证号、或 <code>student_number</code> 学号）。
+                未配置时，系统按「姓名+手机号」组合判重，同一个人换个手机号仍可签到。
+              </p>
             </div>
 
             <button className="btn btn-primary" onClick={handleCreate}>
