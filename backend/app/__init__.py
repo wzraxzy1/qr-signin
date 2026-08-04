@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from .config import FRONTEND_DIST
+from .config import FRONTEND_DIST, IS_PRODUCTION
 from .db import get_db, init_db
 from .crypto import hash_password, verify_password, create_token, verify_token
 from .auth_utils import (
@@ -28,12 +28,29 @@ from .auth_utils import (
 )
 from . import routers
 
+
+def _resolve_cors_origins():
+    """解析允许的跨域来源。
+    - 显式设置 CORS_ORIGINS（逗号分隔）时优先采用；
+    - 生产环境未设置则默认 []（同源 SPA 由本后端挂载，本就无需 CORS）；
+    - 非生产环境未设置则放行常见本地前端来源，方便本地联调。
+    注意：allow_credentials=True 不能与通配符 "*" 共用（违反浏览器同源策略），
+    因此这里始终返回明确的来源列表，禁止回退到 "*"。
+    """
+    raw = os.environ.get("CORS_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    if IS_PRODUCTION:
+        return []
+    return ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
 app = FastAPI(title="QR Sign-in System")
 
-# CORS
+# CORS（禁止 allow_origins=["*"] 与 allow_credentials=True 共用）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_resolve_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

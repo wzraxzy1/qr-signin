@@ -10,9 +10,10 @@ import secrets
 # SECRET_KEY：生产环境（APP_ENV=production）必须显式设置，缺失则拒绝启动，
 # 禁止回退到公开可猜的默认密钥；开发环境未设置时生成临时密钥（进程重启后失效，仅本地可接受）。
 SECRET_KEY = os.environ.get("SECRET_KEY")
-_APP_ENV = os.environ.get("APP_ENV", os.environ.get("ENV", "development")).lower()
+APP_ENV = os.environ.get("APP_ENV", os.environ.get("ENV", "development")).lower()
+IS_PRODUCTION = APP_ENV == "production"
 if not SECRET_KEY:
-    if _APP_ENV == "production":
+    if IS_PRODUCTION:
         raise RuntimeError(
             "安全基线：生产环境必须设置环境变量 SECRET_KEY，禁止回退到默认密钥。"
             "请在部署配置中 export SECRET_KEY=<随机32+位十六进制> 后重启服务。"

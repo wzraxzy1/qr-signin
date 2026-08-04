@@ -9,8 +9,9 @@ import os
 import uuid
 import time
 import json
+import secrets
 
-from .config import DB_PATH
+from .config import DB_PATH, IS_PRODUCTION
 from .crypto import hash_password
 
 
@@ -85,11 +86,26 @@ def init_db():
         cur.execute("ALTER TABLE sessions ADD COLUMN max_signins INTEGER")
     except Exception:
         pass  # column already exists
-    # Create default super admin on first run
+    # Create default super admin on first run.
+    # 安全基线：禁止回退到可猜测的默认密码（如旧版的 "admin123"）。
+    # - 生产环境：必须显式设置 DEFAULT_ADMIN_PASSWORD，否则拒绝启动。
+    # - 开发环境：未设置则生成一次性随机密码并打印到启动日志（仅显示一次），请尽快在管理面板修改。
     cur.execute("SELECT COUNT(*) as cnt FROM users")
     if cur.fetchone()["cnt"] == 0:
         default_user = os.environ.get("DEFAULT_ADMIN_USER", "admin")
-        default_pass = os.environ.get("DEFAULT_ADMIN_PASSWORD", "admin123")
+        default_pass = os.environ.get("DEFAULT_ADMIN_PASSWORD")
+        if not default_pass:
+            if IS_PRODUCTION:
+                raise RuntimeError(
+                    "安全基线：生产环境必须设置环境变量 DEFAULT_ADMIN_PASSWORD，"
+                    "禁止回退到可猜测的默认密码。请在部署配置中 "
+                    "export DEFAULT_ADMIN_PASSWORD=<强随机密码> 后重启服务。"
+                )
+            default_pass = secrets.token_urlsafe(16)
+            print(
+                f"[WARN] 未设置 DEFAULT_ADMIN_PASSWORD，已生成随机初始密码（仅显示一次）：{default_pass}\n"
+                f"       请尽快在管理面板修改。生产环境请通过环境变量显式提供固定密码。"
+            )
         cur.execute(
             "INSERT INTO users (id, username, password_hash, role, is_active, created_at) VALUES (?, ?, ?, 'super_admin', 1, ?)",
             (str(uuid.uuid4())[:12], default_user, hash_password(default_pass), time.time()),
