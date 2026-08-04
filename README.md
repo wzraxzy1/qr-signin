@@ -139,3 +139,33 @@ python -m uvicorn app:app --host 0.0.0.0 --port 9000 --reload
 部署成功后，Render 会分配一个 URL（如 `https://qr-signin-xxxx.onrender.com`）：
 - 管理面板：直接访问该 URL
 - 签到二维码：URL 自动包含正确的域名，手机扫码即可打开签到页面
+
+## 腾讯云部署（轻量应用服务器 / CVM）
+
+> 腾讯云磁盘为持久化存储，SQLite 直接落盘，**无需挂载额外磁盘**，数据重启/重装系统前都在。
+
+### 1. 准备服务器
+
+- 购买 **轻量应用服务器**（最便宜，约几十元/月）或 **CVM**，系统选 **Ubuntu 22.04 / 24.04** 或 **TencentOS / OpenCloudOS**（脚本会自动识别 apt / dnf / yum）。
+- 在控制台开放端口：**80、443**（用了 Nginx/HTTPS）或 **8000**（仅 IP 访问）。轻量在「防火墙」、CVM 在「安全组」里配置。
+
+### 2. 一键部署
+
+SSH 登录服务器后执行（二选一）：
+
+```bash
+# 仅用 公网IP:8000 访问（最简单）
+sudo bash deploy_tencent.sh
+
+# 或绑定域名并自动申请免费 HTTPS 证书
+sudo DOMAIN=sign.example.com EMAIL=you@example.com bash deploy_tencent.sh
+```
+
+脚本会自动：安装 Python3 + Node18 + Nginx → 从 GitHub 拉取代码 → 构建前端 → 建 venv 装依赖 → 生成随机 `SECRET_KEY` → 配置 systemd 开机自启 → （可选）配 Nginx 反代 + Let's Encrypt 证书。
+
+### 3. 验证与维护
+
+- 访问 `http://<公网IP>:8000`（或绑定的域名）。
+- 查看状态：`systemctl status qr-signin`
+- 更新代码后重部署：重新 `sudo bash deploy_tencent.sh`（会 git pull 并重建）。
+- 数据文件：`/opt/qr-signin/backend/signin.db`（持久化，勿删）。
