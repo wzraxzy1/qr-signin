@@ -117,3 +117,23 @@ def test_token_expired(client):
     r = _submit(client, sid, t, {"name": "张三", "phone": "1"})
     assert r.status_code == 403
     assert "过期" in r.json()["detail"]
+
+
+def test_export_masks_id_card(client):
+    token = _login(client)
+    # 会话字段配置需含 id_card，导出才会包含该列（与 UI 默认字段一致）
+    fields = [
+        {"name": "name", "label": "姓名", "type": "text", "required": True},
+        {"name": "phone", "label": "手机号", "type": "tel", "required": True},
+        {"name": "id_card", "label": "身份证号", "type": "text", "required": False},
+    ]
+    sid = _create_session(client, token, fields_config=fields)
+    t = _seed_token(sid)
+    fd = {"name": "张三", "phone": "13800000000", "id_card": "330102199003078888"}
+    assert _submit(client, sid, t, fd).status_code == 200
+    r = client.get(f"/api/sessions/{sid}/export",
+                    headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    body = r.text
+    assert "330102199003078888" not in body   # 明文身份证号不得出现在导出中
+    assert "3301**********8888" in body        # 应出现脱敏后的形式

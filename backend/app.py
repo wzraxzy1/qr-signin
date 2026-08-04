@@ -135,6 +135,51 @@ def require_super_admin(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 
+# ==================== Login Rate Limiting ====================
+# 简单内存级登录限流：单实例部署足够；多实例需改为共享存储（如 Redis）。
+# 按「用户名」+「来源 IP」双维度计数，防止暴力破解与批量探测。
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_WINDOW = 5 * 60        # 计数窗口：5 分钟内
+LOGIN_LOCKOUT = 5 * 60       # 触发上限后锁定时长：5 分钟
+_login_fail: dict = {}       # key -> {"count": int, "first": float}
+
+
+def _rate_limit_allowed(key: str):
+    rec = _login_fail.get(key)
+    if not rec:
+        return True, 0
+    now = time.time()
+    if rec["count"] >= LOGIN_MAX_ATTEMPTS:
+        waited = now - rec["first"]
+        if waited < LOGIN_LOCKOUT:
+            return False, int(LOGIN_LOCKOUT - waited)
+        del _login_fail[key]  # 锁定期已过，重置计数器
+    return True, 0
+
+
+def _rate_limit_register_fail(key: str):
+    now = time.time()
+    rec = _login_fail.get(key)
+    if not rec or (now - rec["first"]) > LOGIN_WINDOW:
+        _login_fail[key] = {"count": 1, "first": now}
+    else:
+        rec["count"] += 1
+
+
+def _rate_limit_clear(key: str):
+    _login_fail.pop(key, None)
+
+
+def mask_id_card(value) -> str:
+    """身份证号脱敏：保留前 4 后 4，中间掩码；长度不足 8 则全掩。导出 CSV 时使用。"""
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    if len(s) <= 8:
+        return "*" * len(s)
+    return s[:4] + "*" * (len(s) - 8) + s[-4:]
+
+
 # ==================== Database ====================
 def get_db():
     # 开启 WAL + busy_timeout，避免 uvicorn 多线程并发下出现间歇性的 "database is locked"，
@@ -324,17 +369,28 @@ def get_current_token(session_id: str) -> dict:
 
 # ==================== API Routes ====================
 @app.post("/api/auth/login")
-async def login(data: LoginRequest):
-    """用户登录，返回 token"""
+async def login(data: LoginRequest, request: Request):
+    """用户登录，返回 token。带登录限流（按用户名 + 来源 IP 双维度）。"""
+    client_ip = request.client.host if request.client else "unknown"
+    username = data.username.strip()
+    for key in (username, f"ip:{client_ip}"):
+        allowed, wait = _rate_limit_allowed(key)
+        if not allowed:
+            raise HTTPException(status_code=429, detail=f"登录尝试过于频繁，请 {wait} 秒后再试")
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE username = ?", (data.username.strip(),))
+    cur.execute("SELECT * FROM users WHERE username = ?", (username,))
     row = cur.fetchone()
-    conn.close()
     if not row or not verify_password(data.password, row["password_hash"]):
+        for key in (username, f"ip:{client_ip}"):
+            _rate_limit_register_fail(key)
+        conn.close()
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     if not row["is_active"]:
+        conn.close()
         raise HTTPException(status_code=403, detail="账号已被禁用")
+    for key in (username, f"ip:{client_ip}"):
+        _rate_limit_clear(key)
     token = create_token(row["id"], row["role"], row["password_version"])
     return {
         "token": token,
@@ -832,7 +888,12 @@ async def export_records(session_id: str, user: dict = Depends(get_current_user)
     # Data rows
     for row in rows:
         data = json.loads(row["field_data"])
-        row_data = [data.get(f["name"], "") for f in fields_config]
+        row_data = []
+        for f in fields_config:
+            val = data.get(f["name"], "")
+            if f["name"] == "id_card":  # 身份证号脱敏，遵守个人信息保护法
+                val = mask_id_card(val)
+            row_data.append(val)
         row_data.append(datetime.fromtimestamp(row["sign_in_time"]).strftime("%Y-%m-%d %H:%M:%S"))
         row_data.append(row["ip_address"])
         writer.writerow(row_data)

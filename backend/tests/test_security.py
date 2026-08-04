@@ -36,3 +36,10 @@ def test_token_carries_password_version():
     tok = app_module.create_token("u1", "admin", password_version=3)
     p = app_module.verify_token(tok)
     assert p["pv"] == 3
+
+
+def test_mask_id_card():
+    assert app_module.mask_id_card("330102199003078888") == "3301**********8888"
+    assert app_module.mask_id_card("123") == "***"        # 长度不足 8 全掩
+    assert app_module.mask_id_card("") == ""
+    assert app_module.mask_id_card(None) == ""
