@@ -173,7 +173,11 @@ sudo systemctl restart qr-signin
 **根因**：systemd 的 unit 文件 `/etc/systemd/system/qr-signin.service` 从未创建（或机器重装/迁移后丢失）。
 **修复（SSH 到服务器后执行）**：
 ```bash
-sudo tee /etc/systemd/system/qr-signin.service > /dev/null <<'EOF'
+# 注意：systemd 的 Environment= 不会执行 $(...)！必须先取出 SECRET_KEY 真实值再内嵌，
+# 且 heredoc 用不带引号的 <<EOF（让 $KEY 展开）：
+KEY=$(cat /opt/qr-signin/.secret_key 2>/dev/null || python3 -c "import secrets;print(secrets.token_hex(32))")
+[ ! -f /opt/qr-signin/.secret_key ] && { echo "$KEY" > /opt/qr-signin/.secret_key; sudo chmod 600 /opt/qr-signin/.secret_key; }
+sudo tee /etc/systemd/system/qr-signin.service > /dev/null <<EOF
 [Unit]
 Description=QR Sign-in Backend
 After=network.target
@@ -182,13 +186,15 @@ After=network.target
 User=ubuntu
 WorkingDirectory=/opt/qr-signin/backend
 Environment=PYTHONUNBUFFERED=1
-Environment=SECRET_KEY=$(cat /opt/qr-signin/.secret_key 2>/dev/null)
+Environment=APP_ENV=production
+Environment=SECRET_KEY=$KEY
 ExecStart=/opt/qr-signin/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
+sudo pkill -9 -f "uvicorn app:app"; sleep 2   # 清掉手动/旧进程，防 systemd 起不来（端口被占）
 sudo systemctl daemon-reload
 sudo systemctl enable qr-signin
 sudo systemctl restart qr-signin
