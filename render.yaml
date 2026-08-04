@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: qr-signin
+    runtime: python
+    plan: free
+    buildCommand: "bash build.sh"
+    startCommand: "cd backend && python -m uvicorn app:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.10"
+      - key: NODE_VERSION
+        value: "18.17.0"
+    # --- Optional: enable persistent disk on paid plan ($7/mo) ---
+    # disk:
+    #   name: signin-data
+    #   mountPath: /opt/render/data
+    #   sizeGB: 1
