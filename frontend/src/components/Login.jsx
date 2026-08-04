@@ -68,10 +68,9 @@ export default function Login() {
             />
           </div>
           <button
-            className="btn btn-primary"
+            className="btn-login"
             type="submit"
             disabled={submitting}
-            style={{ width: '100%', marginTop: 8, padding: '10px 0', fontSize: 15 }}
           >
             {submitting ? '登录中...' : '登 录'}
           </button>
