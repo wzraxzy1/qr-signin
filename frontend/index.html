@@ -4,9 +4,56 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>二维码签到系统</title>
+    <style>
+      #root-loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        color: #64748b;
+      }
+      .spinner {
+        width: 32px;
+        height: 32px;
+        border: 3px solid #e2e8f0;
+        border-top-color: #4f46e5;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin-right: 12px;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      #root-error {
+        display: none;
+        min-height: 100vh;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        color: #ef4444;
+        text-align: center;
+        padding: 20px;
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="root-loading">
+        <div class="spinner"></div>
+        <span>正在加载签到系统...</span>
+      </div>
+    </div>
+    <div id="root-error">
+      <h2>⚠️ 页面加载失败</h2>
+      <p style="margin-top:8px;color:#64748b;">请清除浏览器缓存后刷新，或更换浏览器重试</p>
+    </div>
+    <script>
+      window.onerror = function(msg, url, line, col, error) {
+        document.getElementById('root-loading').style.display = 'none';
+        document.getElementById('root-error').style.display = 'flex';
+        console.error('JS Error:', msg, error);
+      };
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
