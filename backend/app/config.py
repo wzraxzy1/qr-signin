@@ -24,17 +24,18 @@ if not SECRET_KEY:
 
 TOKEN_EXPIRE_HOURS = 24
 
+# 本文件位于 backend/app/config.py，backend 目录为向上两级，项目根(qr-signin/)再上一级
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))    # backend/
+_project_root = os.path.dirname(_backend_dir)                                  # qr-signin/
+
 # Render: use persistent disk path if available, otherwise local dir
 _RENDER_DATA = os.environ.get("RENDER_DATA_DIR", "")
 if _RENDER_DATA:
     DB_PATH = os.path.join(_RENDER_DATA, "signin.db")
 else:
-    # 本文件位于 backend/app/config.py，backend 目录为向上两级
-    _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     DB_PATH = os.path.join(_backend_dir, "signin.db")
 
-# Frontend dist: look relative to backend dir, fallback to /opt/render/ paths for Render
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Frontend dist: 位于项目根的 frontend/dist（默认），找不到时回退到 RENDER_PROJECT_DIR/frontend/dist（Render）
 FRONTEND_DIST = os.path.join(_project_root, "frontend", "dist")
 if not os.path.isdir(FRONTEND_DIST):
     # Render build may place frontend in a different location

@@ -72,7 +72,13 @@ async def health():
 if os.path.isdir(FRONTEND_DIST):
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
 
-    @app.get("/{full_path:path}")
+    @app.get("/", include_in_schema=False)
+    async def serve_spa_root():
+        """SPA 根路径返回 index.html。注意：@app.get("/{full_path:path}") 的 path 转换器要求至少一个字符，"
+        "不匹配空路径 '/'; 因此根路径必须单独注册一个路由。"""
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+
+    @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
         file_path = os.path.join(FRONTEND_DIST, full_path)
         if os.path.isfile(file_path):
