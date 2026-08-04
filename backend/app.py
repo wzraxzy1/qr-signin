@@ -666,23 +666,28 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
         conn.close()
         raise HTTPException(status_code=403, detail="二维码已过期，请重新扫描")
 
-    # Check for duplicate sign-in (by first field value, usually name/phone)
-    fields_config = json.loads(row["fields_config"])
+    # Check for duplicate sign-in using a COMPOSITE key of identity fields.
+    # Prefer employee_id/phone (more unique) and also include name, so two genuinely
+    # different people who share a name but have different phones can both sign in.
+    # Only when neither is collected does it fall back to name-only (or all fields).
     field_data = data.field_data
+    identity_candidates = ["employee_id", "phone", "name"]
+    key_fields = [
+        c for c in identity_candidates
+        if c in field_data and str(field_data.get(c, "")).strip() != ""
+    ]
+    if not key_fields and field_data:
+        key_fields = list(field_data.keys())
 
-    # Try to find a unique identifier (first required field)
-    identifier_field = None
-    for f in fields_config:
-        if f.get("name") == "name" or f.get("name") == "phone" or f.get("name") == "employee_id":
-            identifier_field = f["name"]
-            break
-    if not identifier_field and fields_config:
-        identifier_field = fields_config[0]["name"]
-
-    if identifier_field and identifier_field in field_data:
+    if key_fields:
+        where = " AND ".join("json_extract(field_data, ?) = ?" for _ in key_fields)
+        params = [session_id]
+        for kf in key_fields:
+            params.append(f"$.{kf}")
+            params.append(str(field_data[kf]))
         cur.execute(
-            "SELECT id FROM signins WHERE session_id = ? AND json_extract(field_data, ?) = ?",
-            (session_id, f"$.{identifier_field}", field_data[identifier_field]),
+            f"SELECT id FROM signins WHERE session_id = ? AND {where}",
+            params,
         )
         existing = cur.fetchone()
         if existing:
