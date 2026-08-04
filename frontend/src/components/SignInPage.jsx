@@ -107,6 +107,16 @@ export default function SignInPage() {
       }
     } catch (err) {
       const detail = err.response?.data?.detail || '签到失败'
+      const status = err.response?.status
+      if (status === 409) {
+        // 该二维码已被使用（重复签到）-> 记为“已签到”，本次直接展示已签到卡片；
+        // 同时写入 localStorage，下次进入同一链接直接命中 alreadySigned 分支。
+        localStorage.setItem(signedKey, '1')
+        setAlreadySigned(true)
+        setErrorMsg('')
+        setResult(null)
+        return
+      }
       setErrorMsg(detail)
       setResult('error')
     } finally {

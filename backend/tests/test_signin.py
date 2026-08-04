@@ -67,8 +67,9 @@ def test_dedup_composite_key(client):
     t = _seed_token(sid)
     fd = {"name": "张三", "phone": "13800000000"}
     assert _submit(client, sid, t, fd).status_code == 200
-    # 同一复合键再次提交 -> 409
-    r2 = _submit(client, sid, t, fd)
+    # 同一复合键、换新 token(重新扫码)再次提交 -> 仍 409（跨 token 身份去重）
+    t2 = _seed_token(sid, token_value="TKN2")
+    r2 = _submit(client, sid, t2, fd)
     assert r2.status_code == 409
 
 
@@ -77,14 +78,15 @@ def test_unique_field_employee_id(client):
     sid = _create_session(client, token)
     t = _seed_token(sid)
     assert _submit(client, sid, t, {"name": "张三", "phone": "1", "employee_id": "E1"}).status_code == 200
-    # 姓名/手机都不同，但工号相同 -> 仍判重复
-    r2 = _submit(client, sid, t, {"name": "李四", "phone": "2", "employee_id": "E1"})
+    # 姓名/手机都不同，但工号相同 -> 换新 token 后仍判重复
+    t2 = _seed_token(sid, token_value="TKN2")
+    r2 = _submit(client, sid, t2, {"name": "李四", "phone": "2", "employee_id": "E1"})
     assert r2.status_code == 409
     assert "工号" in r2.json()["detail"]
 
 
 def test_anonymous_token_single_use(client):
-    """匿名签到(表单无任何字段)：同一 token 成功后不可再次使用，防“返回上一页不扫码再签”。"""
+    """匿名签到(表单无任何字段)：同一 token 成功后不可再次使用，防"返回上一页不扫码再签"。"""
     token = _login(client)
     sid = _create_session(client, token, fields_config=[])
     t = _seed_token(sid)
@@ -99,12 +101,41 @@ def test_anonymous_token_single_use(client):
     assert _submit(client, sid, t2, {}).status_code == 200
 
 
+def test_token_single_use_universal_fields(client):
+    """回归（用户报"返回上一页不扫码再次签到"）：带字段表单同 token 二次提交，
+    即使改了字段值也必须 409——之前只查身份去重，改任意字段即可绕过。"""
+    token = _login(client)
+    sid = _create_session(client, token)
+    t = _seed_token(sid)
+    assert _submit(client, sid, t, {"name": "张三", "phone": "1"}).status_code == 200
+    # 返回上一页后改了手机号再提交（身份字段不同，身份去重拦不住）
+    r2 = _submit(client, sid, t, {"name": "张三", "phone": "2"})
+    assert r2.status_code == 409
+    assert "该二维码已签到" in r2.json()["detail"]
+    # 再补一刀：填全新身份也拦（同 token 一律单次使用）
+    r3 = _submit(client, sid, t, {"name": "李四", "phone": "3"})
+    assert r3.status_code == 409
+
+
+def test_token_single_use_anonymous_to_fields(client):
+    """回归：匿名签到成功后，同一 token 改带字段再次提交 -> 409（匿名↔带字段互转绕过）。"""
+    token = _login(client)
+    sid = _create_session(client, token, fields_config=[])
+    t = _seed_token(sid)
+    assert _submit(client, sid, t, {}).status_code == 200
+    r2 = _submit(client, sid, t, {"name": "张三", "phone": "1"})
+    assert r2.status_code == 409
+    assert "该二维码已签到" in r2.json()["detail"]
+
+
 def test_capacity_limit(client):
     token = _login(client)
     sid = _create_session(client, token, max_signins=1)
     t = _seed_token(sid)
     assert _submit(client, sid, t, {"name": "张三", "phone": "1"}).status_code == 200
-    r2 = _submit(client, sid, t, {"name": "李四", "phone": "2"})
+    # 满员后用新 token(重新扫码)提交 -> 409「已满」
+    t2 = _seed_token(sid, token_value="TKN2")
+    r2 = _submit(client, sid, t2, {"name": "李四", "phone": "2"})
     assert r2.status_code == 409
     assert "已满" in r2.json()["detail"]
 
@@ -119,7 +150,10 @@ def test_capacity_limit_no_toctou_under_concurrency(client):
     """
     token = _login(client)
     sid = _create_session(client, token, max_signins=1)
-    _seed_token(sid)
+    # 两个线程各用各的 token（否则统一“同 token 单次使用”规则会先拦截，
+    # 测不到人数上限的并发竞态）
+    _seed_token(sid, token_value="TKN1")
+    _seed_token(sid, token_value="TKN2")
 
     # 两个独立 TestClient（各自持有独立 ASGI portal，避免单 client 跨线程不安全），
     # 共享同一个 app 与同一份临时 DB 文件。
@@ -130,7 +164,7 @@ def test_capacity_limit_no_toctou_under_concurrency(client):
     results = []
     errors = []
 
-    def worker(client_inst, name):
+    def worker(client_inst, token_value, name):
         try:
             barrier.wait()
         except threading.BrokenBarrierError:
@@ -138,14 +172,14 @@ def test_capacity_limit_no_toctou_under_concurrency(client):
         try:
             r = client_inst.post(
                 f"/api/sessions/{sid}/signin",
-                json={"token": "TKN", "field_data": {"name": name, "phone": "1"}},
+                json={"token": token_value, "field_data": {"name": name, "phone": "1"}},
             )
             results.append(r.status_code)
         except Exception as e:  # noqa: BLE001
             errors.append(repr(e))
 
-    t1 = threading.Thread(target=worker, args=(c1, "张三"))
-    t2 = threading.Thread(target=worker, args=(c2, "李四"))
+    t1 = threading.Thread(target=worker, args=(c1, "TKN1", "张三"))
+    t2 = threading.Thread(target=worker, args=(c2, "TKN2", "李四"))
     t1.start()
     t2.start()
     t1.join(timeout=15)

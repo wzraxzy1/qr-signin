@@ -41,30 +41,29 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
     cur = conn.cursor()
 
     # ============ 反重复签到 ============
-    # 同一身份(姓名/手机/工号等)在同一会话只能签到一次；跨 token(重新扫码)也拦。
-    # 若表单完全无字段(匿名签到)，则退化为「同一 token 单次使用」，
-    # 杜绝"签到成功后返回上一页、不重新扫码再次提交"的漏洞。
+    # 规则1（统一，最高优先）：同一 token 在同一 session 只能成功签到一次。
+    # 之前该检查只在「匿名表单(无字段)」分支生效，导致带字段的表单可以通过
+    # “返回上一页后改任意字段值 / 匿名↔带字段互转”绕过身份去重再次签到。
+    # 现在无条件前置：一张二维码 = 一次有效签到，重签必须等二维码刷新重扫。
+    # （身份去重规则2/3 仍保留，用于拦截“重扫新码后同一人再次签到”。）
+    cur.execute(
+        "SELECT id FROM signins WHERE session_id = ? AND token = ?",
+        (session_row["id"], token),
+    )
+    if cur.fetchone():
+        raise _RejectSignin(
+            409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
+        )
+
+    # 规则2：同一身份(姓名/手机/工号等)在同一会话只能签到一次；跨 token(重新扫码)也拦。
     identity_candidates = ["employee_id", "phone", "name"]
     key_fields = [
         c for c in identity_candidates
         if c in field_data and str(field_data.get(c, "")).strip() != ""
     ]
-    if not key_fields:
-        if field_data:
-            # 没有任何标准身份字段，但收集了其它字段 -> 用全部字段做复合去重
-            key_fields = list(field_data.keys())
-        else:
-            # 匿名签到(表单无任何字段)：同一 token 只能成功签到一次
-            cur.execute(
-                "SELECT id FROM signins WHERE session_id = ? AND token = ?",
-                (session_row["id"], token),
-            )
-            if cur.fetchone():
-                raise _RejectSignin(
-                    409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
-                )
-            key_fields = None  # 跳过下方复合去重
-
+    if not key_fields and field_data:
+        # 没有任何标准身份字段，但收集了其它字段 -> 用全部字段做复合去重
+        key_fields = list(field_data.keys())
     if key_fields:
         where = " AND ".join("json_extract(field_data, ?) = ?" for _ in key_fields)
         params = [session_row["id"]]
@@ -78,7 +77,7 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
         if cur.fetchone():
             raise _RejectSignin(409, "您已签到，请勿重复签到")
 
-    # 单字段唯一性（工号 / 身份证号 / 学号）。
+    # 规则3：单字段唯一性（工号 / 身份证号 / 学号）。
     # 若任一字段已存在于本会话其它签到记录则判重复，兜住复合键漏判的情况
     # （如同工号但姓名/手机填错）。
     unique_fields = {
