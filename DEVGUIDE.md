@@ -7,9 +7,16 @@
 
 ## 1. 架构原则
 
-- **后端当前为单体单文件 `backend/app.py`（852 行）**。这是最大的可维护性瓶颈。
-  - 下一阶段必须拆分为 `backend/app/` 包：`routers/`（auth、sessions、signin）、`db.py`、`auth.py`、`schemas.py`、`models.py`。
-  - 拆分前禁止继续往 `app.py` 堆功能；新功能一律以独立 router 形式提交，由资深开发合并时统一迁移。
+- **后端已拆分为 `backend/app/` 包**（2026-08-04 完成，原单体 `app.py` 930 行已拆除）。各文件单一职责：
+  - `app/__init__.py` —— **门面/装配层**：仅创建 FastAPI 实例、配置 CORS、include_router 装配、挂载前端静态资源、启动时 `init_db()`；并重新导出测试所需函数（`init_db`/`get_db`/`hash_password` 等），保证 `import app` 对外契约不变。
+  - `app/config.py` —— 配置单一来源（SECRET_KEY 生产强制校验、DB 路径、前端产物路径、限流/token 常量）。
+  - `app/crypto.py` —— **纯函数层**：密码哈希、token 签发/校验（仅依赖 SECRET_KEY，不碰 DB，便于单测）。
+  - `app/db.py` —— SQLite 连接（WAL + busy_timeout）与 `init_db`（建表/迁移/播种超管）。
+  - `app/auth_utils.py` —— 认证依赖（`get_current_user`/`require_super_admin`）、登录限流、身份证脱敏、QR token 轮转。
+  - `app/schemas.py` —— Pydantic 请求/响应模型。
+  - `app/routers/` —— 按业务域拆分：`auth.py`（登录/当前用户）、`users.py`（用户管理+自助改密）、`sessions.py`（会话 CRUD/QR/公开/记录/导出）、`signin.py`（公开签到提交，单独成文件以突出其无需登录的安全边界）。
+  - **循环依赖规避**：`db.py` 需要 `hash_password` 而不反向依赖 `auth_utils`，故把纯密码/token 函数抽到独立的 `crypto.py`，打破 `db ↔ auth_utils` 环。
+  - **启动契约不变**：部署仍用 `uvicorn app:app`（`app` 即 `app/__init__.py` 导出的 FastAPI 实例）。新增/修改路由一律在对应 `routers/*.py` 内以 `APIRouter` 形式提交，禁止再出现巨型单体文件。
 - **前后端同域部署**：前端 `API='/api'` 为相对路径，正确。不要改回写死 `http://localhost:8000`。
 - 静态资源由 FastAPI 托管（`FRONTEND_DIST`），无独立前端服务器。
 
@@ -57,7 +64,7 @@
     - [ ] 前端 `npm run build` 通过
     - [ ] 无新增 SQL 字符串拼接（全部参数化）
     - [ ] 无敏感信息写入日志 / 提交（身份证号等）
-    - [ ] 新接口在 `backend/app.py` 路由清单有注释说明
+    - [ ] 新接口在 `backend/app/routers/` 对应文件内实现，并在 PR 描述说明
     - [ ] 破坏性 DB 变更走 `init_db` 的 `ALTER TABLE ... try/except` 迁移，向后兼容
 
 ## 6. 可运维性（P1）
@@ -86,8 +93,45 @@
 | P1 | app.py:748,819 | 身份证号明文落库/导出 | ✅ 已修（导出 CSV 对 id_card 脱敏，保留前4后4，2026-08-04） |
 | P1 | app.py:310 | 登录无限流 | ✅ 已修（按用户名+来源IP双维度内存限流：5次/5分钟窗口，超限锁5分钟，2026-08-04） |
 | P1 | app.py:198 | 默认管理员密码兜底 | 待认领 |
-| P1 | 架构 | 单体 852 行未拆分 | 待认领 |
+| P1 | 架构 | 单体 852 行未拆分 | ✅ 已拆为 `backend/app/` 包（config/crypto/db/auth_utils/schemas/routers + 门面 `__init__.py`，2026-08-04） |
 | P1 | CI | 无 PR 门禁 | ✅ 已建 .github/workflows/ci.yml（push/PR 自动跑 pytest + 前端 build，2026-08-04） |
 | P1 | 运维 | 无结构化日志 | 待认领 |
 | P2 | app.py:109-116 | get_current_user 每次请求开 DB 连接 | 待认领 |
 | P2 | schemas | field_data 无长度校验 | 待认领 |
+
+---
+
+## 8. 日常操作指引（如何新增接口 / 部署）
+
+### 8.1 新增一个后端接口（标准流程）
+1. 判断归属：认证相关 → `routers/auth.py`；用户管理 → `routers/users.py`；会话/记录/导出 → `routers/sessions.py`；公开签到 → `routers/signin.py`。
+2. 在该文件顶部已有 `router = APIRouter()`，直接加装饰器即可，例如：
+   ```python
+   @router.get("/api/sessions/{session_id}/something")
+   async def something(session_id: str, user: dict = Depends(get_current_user)):
+       ...
+   ```
+3. 需要 DB：从 `..db` 导入 `get_db`；需要鉴权：`from ..auth_utils import get_current_user, require_super_admin`；纯密码/token：从 `..crypto` 导入。
+4. `__init__.py` 已经 `include_router`，**无需手动注册**——只要写在 routers 文件里，路由自动生效。
+5. 加对应 pytest（参照 `tests/test_signin.py` 的 `_login`/`_create_session`/`_submit` 辅助函数）。
+6. 跑 `python -m pytest -q` 与 `npm run build` 确认绿，再提交。
+
+### 8.2 本地启动
+```bash
+cd backend
+# 方式一（推荐，等价原 python app.py）
+python -m uvicorn app:app --host 0.0.0.0 --port 8000
+# 方式二
+python -m app
+```
+
+### 8.3 部署到腾讯云（后端改动无需重打前端）
+```bash
+# 在服务器上（SSH 后）
+cd /opt/qr-signin
+git pull
+sudo systemctl restart qr-signin
+# 查看状态
+systemctl status qr-signin
+```
+> 注意：如果改了 `frontend/`（前端）才需要 `cd frontend && npm run build` 重新构建；纯后端改动只 restart 服务即可，因为 `uvicorn app:app` 启动契约保持不变。
