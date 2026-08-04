@@ -403,6 +403,27 @@ function SessionDetail({ session, onBack, showToast }) {
     }
   }
 
+  // 导出 CSV：用 axios（自带 token）拉取 blob 再触发下载，避免 window.open 不带鉴权导致 401
+  const handleExport = async () => {
+    try {
+      const res = await axios.get(`${API}/sessions/${session.id}/export`, { responseType: 'blob' })
+      const url = window.URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      const cd = res.headers['content-disposition'] || ''
+      let fname = `signin_${session.name}.csv`
+      const m = cd.match(/filename\*=UTF-8''([^;]+)/) || cd.match(/filename="?([^";]+)"?/)
+      if (m) fname = decodeURIComponent(m[1])
+      a.download = fname
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      showToast('导出失败，请重试', 'error')
+    }
+  }
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -427,7 +448,7 @@ function SessionDetail({ session, onBack, showToast }) {
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               className="btn btn-success btn-sm"
-              onClick={() => window.open(`${API}/sessions/${session.id}/export`)}
+              onClick={handleExport}
             >
               📥 导出 CSV
             </button>
