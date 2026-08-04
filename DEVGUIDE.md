@@ -99,6 +99,7 @@
 | P1 | 运维 | 无结构化日志 | 待认领 |
 | P2 | app.py:109-116 | get_current_user 每次请求开 DB 连接 | 待认领 |
 | P2 | schemas | field_data 无长度校验 | 待认领 |
+| P1 | signin | 签到后返回上一页可重复签到（匿名表单无去重；前端无防重） | ✅ 已修（匿名表单同 token 单次使用 + 前端 localStorage「已签到」守卫，2026-08-05） |
 
 ---
 
