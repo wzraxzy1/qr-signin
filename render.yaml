@@ -2,7 +2,7 @@ services:
   - type: web
     name: qr-signin
     runtime: python
-    plan: free
+    plan: starter  # 持久磁盘需付费档；免费版(free)不支持磁盘
     buildCommand: "bash build.sh"
     startCommand: "cd backend && python -m uvicorn app:app --host 0.0.0.0 --port $PORT"
     envVars:
@@ -10,8 +10,11 @@ services:
         value: "3.12.10"
       - key: NODE_VERSION
         value: "18.17.0"
-    # --- Optional: enable persistent disk on paid plan ($7/mo) ---
-    # disk:
-    #   name: signin-data
-    #   mountPath: /opt/render/data
-    #   sizeGB: 1
+      # 数据库写到持久磁盘，跨部署保留数据
+      - key: RENDER_DATA_DIR
+        value: "/opt/render/data"
+    # Persistent disk: data persists across deploys/restarts
+    disk:
+      name: signin-data
+      mountPath: /opt/render/data
+      sizeGB: 1
