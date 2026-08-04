@@ -9,14 +9,22 @@ import time
 import os
 import csv
 import io
+import hashlib
+import hmac
+import secrets
+import base64
 import urllib.parse
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Request, Query, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+
+# Auth config
+SECRET_KEY = os.environ.get("SECRET_KEY", "qr-signin-secret-key-change-me-in-production")
+TOKEN_EXPIRE_HOURS = 24
 
 # Render: use persistent disk path if available, otherwise local dir
 _RENDER_DATA = os.environ.get("RENDER_DATA_DIR", "")
@@ -43,6 +51,66 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ==================== Auth Utils ====================
+def hash_password(password: str, salt: Optional[str] = None) -> str:
+    """PBKDF2 password hashing with random salt"""
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 100000).hex()
+    return f"{salt}${digest}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt, digest = stored.split("$")
+        candidate = hash_password(password, salt)
+        return hmac.compare_digest(candidate, stored)
+    except Exception:
+        return False
+
+
+def create_token(user_id: str, role: str, expires_hours: int = TOKEN_EXPIRE_HOURS) -> str:
+    payload = base64.urlsafe_b64encode(
+        json.dumps({
+            "uid": user_id,
+            "role": role,
+            "exp": time.time() + expires_hours * 3600,
+        }).encode()
+    ).decode()
+    sig = hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def verify_token(token: str) -> Optional[dict]:
+    try:
+        payload_b64, sig = token.rsplit(".", 1)
+        expected = hmac.new(SECRET_KEY.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        if payload.get("exp", 0) < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def get_current_user(authorization: str = Header(None)) -> dict:
+    """FastAPI dependency: require a valid Bearer token"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="请先登录")
+    payload = verify_token(authorization[7:])
+    if not payload:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+    return payload
+
+
+def require_super_admin(user: dict = Depends(get_current_user)) -> dict:
+    """FastAPI dependency: require super admin role"""
+    if user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="需要超级管理员权限")
+    return user
 
 
 # ==================== Database ====================
@@ -88,6 +156,25 @@ def init_db():
             FOREIGN KEY (session_id) REFERENCES sessions(id)
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'admin',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL
+        )
+    """)
+    # Create default super admin on first run
+    cur.execute("SELECT COUNT(*) as cnt FROM users")
+    if cur.fetchone()["cnt"] == 0:
+        default_user = os.environ.get("DEFAULT_ADMIN_USER", "admin")
+        default_pass = os.environ.get("DEFAULT_ADMIN_PASSWORD", "admin123")
+        cur.execute(
+            "INSERT INTO users (id, username, password_hash, role, is_active, created_at) VALUES (?, ?, ?, 'super_admin', 1, ?)",
+            (str(uuid.uuid4())[:12], default_user, hash_password(default_pass), time.time()),
+        )
     # Clean up tokens older than 5 minutes on startup
     cur.execute("DELETE FROM qr_tokens WHERE created_at < ?", (time.time() - 300,))
     conn.commit()
@@ -119,6 +206,23 @@ class SessionUpdate(BaseModel):
 class SignInSubmit(BaseModel):
     token: str
     field_data: Dict[str, Any]
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "admin"
+
+
+class UserUpdate(BaseModel):
+    password: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[int] = None
 
 
 # ==================== Token Management ====================
@@ -169,13 +273,148 @@ def get_current_token(session_id: str) -> dict:
 
 
 # ==================== API Routes ====================
+@app.post("/api/auth/login")
+async def login(data: LoginRequest):
+    """用户登录，返回 token"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE username = ?", (data.username.strip(),))
+    row = cur.fetchone()
+    conn.close()
+    if not row or not verify_password(data.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    if not row["is_active"]:
+        raise HTTPException(status_code=403, detail="账号已被禁用")
+    token = create_token(row["id"], row["role"])
+    return {
+        "token": token,
+        "user": {
+            "id": row["id"],
+            "username": row["username"],
+            "role": row["role"],
+        },
+    }
+
+
+@app.get("/api/auth/me")
+async def auth_me(user: dict = Depends(get_current_user)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, username, role, is_active, created_at FROM users WHERE id = ?", (user["uid"],))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=401, detail="用户不存在")
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "role": row["role"],
+        "is_active": row["is_active"],
+        "created_at": row["created_at"],
+    }
+
+
+# ==================== User Management (Super Admin only) ====================
+@app.get("/api/users")
+async def list_users(_: dict = Depends(require_super_admin)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, username, role, is_active, created_at FROM users ORDER BY created_at ASC")
+    rows = cur.fetchall()
+    conn.close()
+    users = [dict(r) for r in rows]
+    # created_at is a float, keep as-is for frontend
+    return {"users": users}
+
+
+@app.post("/api/users")
+async def create_user(data: UserCreate, _: dict = Depends(require_super_admin)):
+    username = data.username.strip()
+    if not username or not data.password:
+        raise HTTPException(status_code=400, detail="用户名和密码不能为空")
+    if data.role not in ("super_admin", "admin"):
+        raise HTTPException(status_code=400, detail="无效的角色")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE username = ?", (username,))
+    if cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=409, detail="用户名已存在")
+    user_id = str(uuid.uuid4())[:12]
+    cur.execute(
+        "INSERT INTO users (id, username, password_hash, role, is_active, created_at) VALUES (?, ?, ?, ?, 1, ?)",
+        (user_id, username, hash_password(data.password), data.role, time.time()),
+    )
+    conn.commit()
+    conn.close()
+    return {"id": user_id, "username": username, "role": data.role}
+
+
+@app.put("/api/users/{user_id}")
+async def update_user(user_id: str, data: UserUpdate, _: dict = Depends(require_super_admin)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if data.role is not None and data.role not in ("super_admin", "admin"):
+        conn.close()
+        raise HTTPException(status_code=400, detail="无效的角色")
+    # Prevent disabling/demoting the last super admin
+    if row["role"] == "super_admin" and (data.role != "super_admin" or data.is_active == 0):
+        cur.execute("SELECT COUNT(*) as cnt FROM users WHERE role = 'super_admin' AND is_active = 1")
+        if cur.fetchone()["cnt"] <= 1:
+            conn.close()
+            raise HTTPException(status_code=400, detail="不能禁用或降级最后一个超级管理员")
+
+    updates = []
+    params = []
+    if data.password:
+        updates.append("password_hash = ?")
+        params.append(hash_password(data.password))
+    if data.role is not None:
+        updates.append("role = ?")
+        params.append(data.role)
+    if data.is_active is not None:
+        updates.append("is_active = ?")
+        params.append(data.is_active)
+    if updates:
+        params.append(user_id)
+        cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+    conn.close()
+    return {"status": "updated"}
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(user_id: str, _: dict = Depends(require_super_admin)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if row["role"] == "super_admin":
+        cur.execute("SELECT COUNT(*) as cnt FROM users WHERE role = 'super_admin' AND is_active = 1")
+        if cur.fetchone()["cnt"] <= 1:
+            conn.close()
+            raise HTTPException(status_code=400, detail="不能删除最后一个超级管理员")
+    cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "deleted"}
+
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
 
 
 @app.post("/api/sessions")
-async def create_session(session: SessionCreate):
+async def create_session(session: SessionCreate, user: dict = Depends(get_current_user)):
     session_id = str(uuid.uuid4())[:8]
     now = time.time()
     conn = get_db()
@@ -198,7 +437,7 @@ async def create_session(session: SessionCreate):
 
 
 @app.get("/api/sessions")
-async def list_sessions():
+async def list_sessions(user: dict = Depends(get_current_user)):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT * FROM sessions ORDER BY created_at DESC")
@@ -219,7 +458,7 @@ async def list_sessions():
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, user: dict = Depends(get_current_user)):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
@@ -244,7 +483,7 @@ async def get_session(session_id: str):
 
 
 @app.put("/api/sessions/{session_id}")
-async def update_session(session_id: str, update: SessionUpdate):
+async def update_session(session_id: str, update: SessionUpdate, user: dict = Depends(get_current_user)):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
@@ -281,7 +520,7 @@ async def update_session(session_id: str, update: SessionUpdate):
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, user: dict = Depends(get_current_user)):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("DELETE FROM signins WHERE session_id = ?", (session_id,))
@@ -292,7 +531,7 @@ async def delete_session(session_id: str):
 
 
 @app.get("/api/sessions/{session_id}/qr")
-async def get_qr_info(session_id: str, request: Request):
+async def get_qr_info(session_id: str, request: Request, user: dict = Depends(get_current_user)):
     """获取当前 QR 码信息"""
     token_info = get_current_token(session_id)
     # Build the sign-in URL
@@ -376,7 +615,7 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
 
 
 @app.get("/api/sessions/{session_id}/records")
-async def get_records(session_id: str):
+async def get_records(session_id: str, user: dict = Depends(get_current_user)):
     """获取签到记录"""
     conn = get_db()
     cur = conn.cursor()
@@ -411,7 +650,7 @@ async def get_records(session_id: str):
 
 
 @app.get("/api/sessions/{session_id}/export")
-async def export_records(session_id: str):
+async def export_records(session_id: str, user: dict = Depends(get_current_user)):
     """导出签到记录为 CSV"""
     conn = get_db()
     cur = conn.cursor()
