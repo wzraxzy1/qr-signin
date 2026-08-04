@@ -19,7 +19,8 @@ set -e
 APP_NAME="qr-signin"
 APP_DIR="${APP_DIR:-/opt/$APP_NAME}"
 REPO_URL="https://github.com/wzraxzy1/qr-signin.git"
-APP_USER="qrsignin"
+# 服务以操作员用户运行，避免 sudo 部署后文件归 root、而服务用户无写库权限导致启动失败
+APP_USER="${SUDO_USER:-ubuntu}"
 PORT="${PORT:-8000}"
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-}"
