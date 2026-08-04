@@ -4,6 +4,8 @@ __pycache__/
 *.pyd
 .Python
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 node_modules/
 dist/

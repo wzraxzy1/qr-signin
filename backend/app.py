@@ -23,7 +23,19 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
 # Auth config
-SECRET_KEY = os.environ.get("SECRET_KEY", "qr-signin-secret-key-change-me-in-production")
+# SECRET_KEY：生产环境（APP_ENV=production）必须显式设置，缺失则拒绝启动，
+# 禁止回退到公开可猜的默认密钥；开发环境未设置时生成临时密钥（进程重启后失效，仅本地可接受）。
+SECRET_KEY = os.environ.get("SECRET_KEY")
+_APP_ENV = os.environ.get("APP_ENV", os.environ.get("ENV", "development")).lower()
+if not SECRET_KEY:
+    if _APP_ENV == "production":
+        raise RuntimeError(
+            "安全基线：生产环境必须设置环境变量 SECRET_KEY，禁止回退到默认密钥。"
+            "请在部署配置中 export SECRET_KEY=<随机32+位十六进制> 后重启服务。"
+        )
+    SECRET_KEY = secrets.token_hex(32)
+    print("[WARN] SECRET_KEY 未设置，已生成临时开发密钥（进程重启后失效）。"
+          "生产部署请通过环境变量提供固定的 SECRET_KEY。")
 TOKEN_EXPIRE_HOURS = 24
 
 # Render: use persistent disk path if available, otherwise local dir
@@ -125,7 +137,11 @@ def require_super_admin(user: dict = Depends(get_current_user)) -> dict:
 
 # ==================== Database ====================
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    # 开启 WAL + busy_timeout，避免 uvicorn 多线程并发下出现间歇性的 "database is locked"，
+    # 并将锁等待拉长到 10s 而非默认的 5s 立即失败。
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.row_factory = sqlite3.Row
     return conn
 
