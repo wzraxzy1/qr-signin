@@ -81,6 +81,22 @@ def test_unique_field_employee_id(client):
     assert "工号" in r2.json()["detail"]
 
 
+def test_anonymous_token_single_use(client):
+    """匿名签到(表单无任何字段)：同一 token 成功后不可再次使用，防“返回上一页不扫码再签”。"""
+    token = _login(client)
+    sid = _create_session(client, token, fields_config=[])
+    t = _seed_token(sid)
+    # 无字段表单：field_data 传空对象
+    assert _submit(client, sid, t, {}).status_code == 200
+    # 同一 token 再次提交(相当于返回上一页重签) -> 409
+    r2 = _submit(client, sid, t, {})
+    assert r2.status_code == 409
+    assert "已签到" in r2.json()["detail"]
+    # 新 token(重新扫码) 允许签到
+    t2 = _seed_token(sid, token_value="TKN2")
+    assert _submit(client, sid, t2, {}).status_code == 200
+
+
 def test_capacity_limit(client):
     token = _login(client)
     sid = _create_session(client, token, max_signins=1)

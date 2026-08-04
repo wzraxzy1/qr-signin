@@ -16,6 +16,10 @@ export default function SignInPage() {
   const [errorMsg, setErrorMsg] = useState('')
   const [windowMsg, setWindowMsg] = useState('')
   const [formData, setFormData] = useState({})
+  // 同一二维码(同 session+token)签到成功后标记，返回上一页再次进入时直接展示“已签到”，
+  // 防止“签到完返回不重新扫码又提交一次”的重复签到漏洞。
+  const [alreadySigned, setAlreadySigned] = useState(false)
+  const signedKey = `qr_signin_signed_${sessionId}_${token}`
 
   // 评估签到时间窗口：未开始/已结束/已关闭 -> 不允许签到
   const evaluateWindow = (data) => {
@@ -60,8 +64,14 @@ export default function SignInPage() {
       setLoading(false)
       return
     }
+    // 该二维码已成功签到过 -> 直接展示“已签到”，不再出现表单
+    if (localStorage.getItem(signedKey) === '1') {
+      setAlreadySigned(true)
+      setLoading(false)
+      return
+    }
     fetchSession()
-  }, [sessionId, token, fetchSession])
+  }, [sessionId, token, fetchSession, signedKey])
 
   // 未开始时定时轮询，到达开始时间后自动开放表单
   useEffect(() => {
@@ -92,6 +102,7 @@ export default function SignInPage() {
         field_data: formData,
       })
       if (res.data.status === 'success') {
+        localStorage.setItem(signedKey, '1')
         setResult('success')
       }
     } catch (err) {
@@ -131,6 +142,25 @@ export default function SignInPage() {
     )
   }
 
+  if (alreadySigned) {
+    return (
+      <div className="signin-container">
+        <div className="signin-card">
+          <div className="signin-success">
+            <div className="success-icon">✅</div>
+            <h2>您已签到</h2>
+            <p style={{ color: 'var(--text-light)', marginTop: 8 }}>
+              该二维码已成功签到，请勿重复签到。
+            </p>
+            <p style={{ fontSize: 13, marginTop: 8, color: 'var(--warning)' }}>
+              如需为他人签到，请重新扫描最新二维码
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (result === 'success') {
     return (
       <div className="signin-container">
@@ -140,6 +170,9 @@ export default function SignInPage() {
             <h2>签到成功</h2>
             <p style={{ color: 'var(--text-light)', marginTop: 8 }}>
               签到时间：{new Date().toLocaleString('zh-CN')}
+            </p>
+            <p style={{ fontSize: 13, marginTop: 8, color: 'var(--warning)' }}>
+              如需为他人签到，请重新扫描最新二维码
             </p>
           </div>
         </div>
