@@ -70,11 +70,12 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
-def create_token(user_id: str, role: str, expires_hours: int = TOKEN_EXPIRE_HOURS) -> str:
+def create_token(user_id: str, role: str, password_version: int = 0, expires_hours: int = TOKEN_EXPIRE_HOURS) -> str:
     payload = base64.urlsafe_b64encode(
         json.dumps({
             "uid": user_id,
             "role": role,
+            "pv": password_version,
             "exp": time.time() + expires_hours * 3600,
         }).encode()
     ).decode()
@@ -97,12 +98,21 @@ def verify_token(token: str) -> Optional[dict]:
 
 
 def get_current_user(authorization: str = Header(None)) -> dict:
-    """FastAPI dependency: require a valid Bearer token"""
+    """FastAPI dependency: require a valid Bearer token.
+    若用户改密/被重置密码（密码版本号变化），旧 token 立即失效。"""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="请先登录")
     payload = verify_token(authorization[7:])
     if not payload:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+    # Invalidate token when password changed after it was issued
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT password_version FROM users WHERE id = ?", (payload["uid"],))
+    row = cur.fetchone()
+    conn.close()
+    if not row or row["password_version"] != payload.get("pv", 0):
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
     return payload
 
 
@@ -166,6 +176,11 @@ def init_db():
             created_at REAL NOT NULL
         )
     """)
+    # Migration: add password_version column for token invalidation on password change
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN password_version INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass  # column already exists
     # Create default super admin on first run
     cur.execute("SELECT COUNT(*) as cnt FROM users")
     if cur.fetchone()["cnt"] == 0:
@@ -290,7 +305,7 @@ async def login(data: LoginRequest):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     if not row["is_active"]:
         raise HTTPException(status_code=403, detail="账号已被禁用")
-    token = create_token(row["id"], row["role"])
+    token = create_token(row["id"], row["role"], row["password_version"])
     return {
         "token": token,
         "user": {
@@ -337,7 +352,7 @@ async def change_my_password(data: ChangePassword, user: dict = Depends(get_curr
         conn.close()
         raise HTTPException(status_code=400, detail="当前密码错误")
     cur.execute(
-        "UPDATE users SET password_hash = ? WHERE id = ?",
+        "UPDATE users SET password_hash = ?, password_version = password_version + 1 WHERE id = ?",
         (hash_password(data.new_password), user["uid"]),
     )
     conn.commit()
@@ -403,7 +418,7 @@ async def update_user(user_id: str, data: UserUpdate, _: dict = Depends(require_
     updates = []
     params = []
     if data.password:
-        updates.append("password_hash = ?")
+        updates.append("password_hash = ?, password_version = password_version + 1")
         params.append(hash_password(data.password))
     if data.role is not None:
         updates.append("role = ?")
