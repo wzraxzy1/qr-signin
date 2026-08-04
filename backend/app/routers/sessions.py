@@ -272,3 +272,27 @@ async def export_records(session_id: str, user: dict = Depends(get_current_user)
             "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
         }
     )
+@router.get("/api/sessions/{session_id}/stats")
+async def get_session_stats(session_id: str, user: dict = Depends(get_current_user)):
+    """查看单个会话的签到概况（需登录）"""
+    conn = get_db()
+    cur = conn.cursor()
+    # 1) 会话是否存在
+    cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    # 2) 聚合签到数据
+    cur.execute(
+        "SELECT COUNT(*) AS cnt, MIN(sign_in_time) AS first_t, MAX(sign_in_time) AS last_t "
+        "FROM signins WHERE session_id = ?",
+        (session_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return {
+        "session_id": session_id,
+        "sign_in_count": row["cnt"],
+        "first_sign_in": row["first_t"],
+        "last_sign_in": row["last_t"],
+    }
