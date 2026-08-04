@@ -492,6 +492,34 @@ body {
   display: inline-block;
 }
 
+.qr-window-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 16px;
+  margin: 8px 0 4px;
+  border-radius: 16px;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.qr-window-status .qr-window-icon {
+  font-size: 48px;
+  line-height: 1;
+  margin-bottom: 12px;
+}
+
+.qr-window-status .qr-window-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.qr-window-status .qr-window-sub {
+  font-size: 14px;
+  color: var(--text-light);
+  margin-top: 8px;
+}
+
 .qr-wrapper {
   padding: 20px;
   background: white;
