@@ -106,7 +106,7 @@ export default function SignInPage() {
     // 该二维码已成功签到过，或本设备本场签到已签过（重扫新码）-> 直接展示“已签到”
     if (localStorage.getItem(signedKey) === '1' || localStorage.getItem(deviceSignedKey) === '1') {
       setAlreadySigned(true)
-      setSignedNote('该设备已成功签到，请勿重复签到。如需为他人签到，请换一台设备。')
+      setSignedNote('该设备已成功签到，请勿重复签到。')
       setLoading(false)
       return
     }
@@ -230,9 +230,6 @@ export default function SignInPage() {
             <p style={{ color: 'var(--text-light)', marginTop: 8 }}>
               {signedNote || '该二维码已成功签到，请勿重复签到。'}
             </p>
-            <p style={{ fontSize: 13, marginTop: 8, color: 'var(--warning)' }}>
-              如需为他人签到，请重新扫描最新二维码
-            </p>
           </div>
         </div>
       </div>
@@ -248,9 +245,6 @@ export default function SignInPage() {
             <h2>签到成功</h2>
             <p style={{ color: 'var(--text-light)', marginTop: 8 }}>
               签到时间：{new Date().toLocaleString('zh-CN')}
-            </p>
-            <p style={{ fontSize: 13, marginTop: 8, color: 'var(--warning)' }}>
-              如需为他人签到，请重新扫描最新二维码
             </p>
           </div>
         </div>

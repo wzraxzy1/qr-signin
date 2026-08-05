@@ -73,7 +73,7 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip, dev
         )
         if cur.fetchone():
             raise _RejectSignin(
-                409, "该设备已签到，请勿重复签到（如需为他人签到，请换一台设备）"
+                409, "该设备已签到，请勿重复签到"
             )
 
     # ============ 反重复签到（多人共码语义）============
