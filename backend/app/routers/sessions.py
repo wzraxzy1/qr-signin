@@ -420,8 +420,8 @@ async def import_roster(
             cell = r[idx] if idx < len(r) else ""
             field_data[key] = cell
         cur.execute(
-            "INSERT INTO roster (session_id, seq, field_data) VALUES (?, ?, ?)",
-            (session_id, seq, json.dumps(field_data, ensure_ascii=False)),
+            "INSERT INTO roster (session_id, seq, field_data, sign_token) VALUES (?, ?, ?, ?)",
+            (session_id, seq, json.dumps(field_data, ensure_ascii=False), uuid.uuid4().hex[:16]),
         )
         seq += 1
     cur.execute(
@@ -455,6 +455,81 @@ async def get_roster(session_id: str, user: dict = Depends(get_current_user)):
         "match_field": row["roster_match_field"],
         "imported": cnt > 0,
     }
+
+
+@router.get("/api/sessions/{session_id}/roster/qrcodes")
+async def get_roster_qrcodes(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """管理员：返回本会话名单中每人的专属签到码（一人一码）。
+
+    每条返回 seq / 显示名 / sign_token（用于拼签到 URL）/ 是否已签。
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    row = _owned_session(cur, session_id, user)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    match_field = row["roster_match_field"]
+    cur.execute(
+        "SELECT seq, field_data, sign_token FROM roster WHERE session_id = ? ORDER BY seq ASC",
+        (session_id,),
+    )
+    roster_rows = cur.fetchall()
+    # 计算已签集合（按 match_field 值去空白相等匹配，与 reconcile 一致）
+    signed_set = set()
+    if match_field:
+        cur.execute("SELECT field_data FROM signins WHERE session_id = ?", (session_id,))
+        for r in cur.fetchall():
+            fd = json.loads(r["field_data"])
+            v = str(fd.get(match_field, "")).strip()
+            if v:
+                signed_set.add(v)
+    conn.close()
+    base_url = str(request.base_url).rstrip("/")
+    items = []
+    for r in roster_rows:
+        fd = json.loads(r["field_data"])
+        display = (str(fd.get(match_field, "")).strip() if match_field
+                   else str(fd.get("name", "")).strip() or f"第{r['seq'] + 1}位")
+        is_signed = bool(match_field) and (str(fd.get(match_field, "")).strip() in signed_set)
+        items.append({
+            "seq": r["seq"],
+            "display": display,
+            "sign_token": r["sign_token"],
+            "signed": is_signed,
+            "url": f"{base_url}/#/signin?session={session_id}&token={r['sign_token']}",
+        })
+    return {"count": len(items), "match_field": match_field, "items": items}
+
+
+@router.get("/api/sessions/{session_id}/roster/token-info")
+async def roster_token_info(session_id: str, token: str = ""):
+    """公开接口：签到页判断当前 token 是否为名单专属码（一人一码）。
+
+    是则返回绑定身份（显示名 + match_field），签到页据此锁定身份、展示确认页；
+    否则返回 is_roster=false，走原表单流程。无需登录（签到页本身即公开）。
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+    srow = cur.fetchone()
+    if not srow:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    cur.execute(
+        "SELECT field_data, sign_token FROM roster WHERE session_id = ? AND sign_token = ? LIMIT 1",
+        (session_id, token),
+    )
+    rrow = cur.fetchone()
+    if not rrow:
+        conn.close()
+        return {"is_roster": False}
+    match_field = srow["roster_match_field"]
+    fd = json.loads(rrow["field_data"])
+    display = (str(fd.get(match_field, "")).strip() if match_field
+               else str(fd.get("name", "")).strip() or "")
+    conn.close()
+    return {"is_roster": True, "display": display, "match_field": match_field}
 
 
 @router.get("/api/sessions/{session_id}/reconcile")

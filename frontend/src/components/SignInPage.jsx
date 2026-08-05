@@ -52,6 +52,9 @@ export default function SignInPage() {
   // 设备级已签标记（不随 token 变化）：重扫新码重新进入时也能即时提示"已签到"，
   // 与后端设备去重互为表里（前端即时反馈、后端权威拦截）。
   const deviceSignedKey = `qr_signin_device_signed_${sessionId}`
+  // 一人一码：当前 token 是否为名单专属码（绑定身份，不可改）。
+  const [isRoster, setIsRoster] = useState(false)
+  const [rosterDisplay, setRosterDisplay] = useState('')
 
   // 评估签到时间窗口：未开始/已结束/已关闭 -> 不允许签到
   const evaluateWindow = (data) => {
@@ -110,7 +113,18 @@ export default function SignInPage() {
       setLoading(false)
       return
     }
-    fetchSession()
+    // 先判断是否名单专属码（一人一码）：是则锁定身份展示确认页，不再渲染普通表单
+    axios.get(`${API}/sessions/${sessionId}/roster/token-info?token=${encodeURIComponent(token)}`)
+      .then((res) => {
+        if (res.data.is_roster) {
+          setIsRoster(true)
+          setRosterDisplay(res.data.display || '本人')
+          setLoading(false)
+        } else {
+          fetchSession()
+        }
+      })
+      .catch(() => fetchSession())  // 接口异常则退回普通表单流程
   }, [sessionId, token, fetchSession, signedKey, bypassWeChat])
 
   // 未开始时定时轮询，到达开始时间后自动开放表单
@@ -178,6 +192,46 @@ export default function SignInPage() {
 
   const handleChange = (name, value) => {
     setFormData({ ...formData, [name]: value })
+  }
+
+  // 一人一码专属码提交：只带 token，身份由后端按名单条目绑定（忽略/不提交字段）。
+  const handleRosterSubmit = async () => {
+    if (submitting) return
+    setSubmitting(true)
+    setResult(null)
+    try {
+      const res = await axios.post(`${API}/sessions/${sessionId}/signin`, {
+        token,
+        field_data: {},
+        device_id: getDeviceId(),
+      })
+      if (res.data.status === 'success') {
+        localStorage.setItem(signedKey, '1')
+        localStorage.setItem(deviceSignedKey, '1')
+        setResult('success')
+      }
+    } catch (err) {
+      const detail = err.response?.data?.detail || '签到失败'
+      const status = err.response?.status
+      if (status === 409) {
+        if (detail.includes('已满')) {
+          setErrorMsg(detail)
+          setResult('error')
+          return
+        }
+        localStorage.setItem(signedKey, '1')
+        localStorage.setItem(deviceSignedKey, '1')
+        setAlreadySigned(true)
+        setSignedNote(detail)
+        setErrorMsg('')
+        setResult(null)
+        return
+      }
+      setErrorMsg(detail)
+      setResult('error')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   if (loading) {
@@ -265,6 +319,32 @@ export default function SignInPage() {
                 请重新扫描最新二维码
               </p>
             )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // 一人一码专属码：锁定身份，仅展示确认签到（身份由后端绑定，不可改）
+  if (isRoster) {
+    return (
+      <div className="signin-container">
+        <div className="signin-card">
+          <div className="signin-success">
+            <div className="success-icon">🪪</div>
+            <h2>专属签到码</h2>
+            <p style={{ color: 'var(--text-light)', marginTop: 8 }}>
+              {rosterDisplay}，请确认是您本人签到
+            </p>
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={handleRosterSubmit}
+              disabled={submitting}
+              style={{ width: '100%', marginTop: 16 }}
+            >
+              {submitting ? '提交中...' : '确认签到'}
+            </button>
           </div>
         </div>
       </div>

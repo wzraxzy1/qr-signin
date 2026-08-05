@@ -1,4 +1,5 @@
 """submit_signin 核心逻辑单测：成功 / 复合键去重 / 强唯一字段去重 / 人数上限 / 时间窗口 / token 过期。"""
+import json
 import threading
 import time
 
@@ -344,3 +345,72 @@ def test_wechat_only_rejects_non_wechat_in_production(client):
             os.environ.pop("APP_ENV", None)
         else:
             os.environ["APP_ENV"] = old
+
+
+def _import_roster_csv(client, token, sid, csv_text, match_field):
+    return client.post(
+        f"/api/sessions/{sid}/roster",
+        files={"file": ("roster.csv", csv_text.encode("utf-8-sig"), "text/csv")},
+        data={"match_field": match_field},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def _stored_signins(client, sid):
+    conn = app_module.get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT field_data, roster_token FROM signins WHERE session_id = ?", (sid,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def test_roster_per_person_qr_binds_identity_and_single_use(client):
+    """一人一码：名单专属码绑定身份（忽略提交字段）、且只能成功一次（杜绝照片分享冒签）。"""
+    token = _login(client)
+    sid = _create_session(client, token)
+    csv = "name,phone,employee_id\n张三,13800000001,1001\n李四,13800000002,1002\n"
+    r = _import_roster_csv(client, token, sid, csv, "employee_id")
+    assert r.status_code == 200, r.text
+
+    # 取出每人专属码
+    q = client.get(f"/api/sessions/{sid}/roster/qrcodes",
+                   headers={"Authorization": f"Bearer {token}"}).json()
+    assert q["count"] == 2
+    tokens = {it["display"]: it["sign_token"] for it in q["items"]}
+    t_zhang, t_li = tokens["1001"], tokens["1002"]
+
+    # 张三用自己专属码签到（提交空字段，身份应由后端按名单绑定）
+    r1 = _submit(client, sid, t_zhang, {}, device_id="D1")
+    assert r1.status_code == 200, r1.text
+    rows = _stored_signins(client, sid)
+    assert len(rows) == 1
+    assert json.loads(rows[0]["field_data"])["employee_id"] == "1001"  # 身份被绑定
+    assert rows[0]["roster_token"] == t_zhang
+
+    # 复用张三专属码（换设备 D2）→ 该码已使用，409
+    r2 = _submit(client, sid, t_zhang, {}, device_id="D2")
+    assert r2.status_code == 409
+    assert "该签到码已使用" in r2.json()["detail"]
+
+    # 李四用自己专属码（不同设备 D3）→ 放行
+    r3 = _submit(client, sid, t_li, {}, device_id="D3")
+    assert r3.status_code == 200, r3.text
+
+    # 公开 token-info：张三专属码 is_roster=true；随机 token → false
+    info = client.get(f"/api/sessions/{sid}/roster/token-info?token={t_zhang}").json()
+    assert info["is_roster"] is True
+    assert info["display"] == "1001"
+    info2 = client.get(f"/api/sessions/{sid}/roster/token-info?token=random_nope").json()
+    assert info2["is_roster"] is False
+
+
+def test_shared_qr_still_works_for_roster_session(client):
+    """名单会话仍可走共享二维码（qr_tokens）路径，旧逻辑不被破坏。"""
+    token = _login(client)
+    sid = _create_session(client, token)
+    csv = "name,employee_id\n张三,1001\n"
+    assert _import_roster_csv(client, token, sid, csv, "employee_id").status_code == 200
+    t = _seed_token(sid)  # 共享码
+    r = _submit(client, sid, t, {"name": "王五", "employee_id": "1001"}, device_id="DX")
+    assert r.status_code == 200, r.text

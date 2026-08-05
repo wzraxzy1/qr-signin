@@ -53,7 +53,7 @@ class _RejectSignin(Exception):
         self.detail = detail
 
 
-def try_persist_signin(conn, session_row, token, field_data, now, client_ip, device_id=""):
+def try_persist_signin(conn, session_row, token, field_data, now, client_ip, device_id="", roster_token=None):
     """在调用方已开启的写事务内完成 去重 + 人数上限 + INSERT。
 
     不负责 BEGIN/COMMIT——事务边界由 submit_signin 统一控制，以保证原子性。
@@ -101,7 +101,7 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip, dev
             raise _RejectSignin(
                 409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
             )
-        return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id)
+        return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id, roster_token)
 
     # ---- 多人会话：身份去重 ----
     # 身份候选字段非空值 -> 复合键去重
@@ -123,7 +123,7 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip, dev
                 raise _RejectSignin(
                     409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
                 )
-            return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id)
+            return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id, roster_token)
         key_fields = list(non_empty.keys())
 
     if key_fields:
@@ -158,13 +158,14 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip, dev
         if cur.fetchone():
             raise _RejectSignin(409, f"该{label}已签到，请勿重复签到")
 
-    return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id)
+    return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id, roster_token)
 
 
-def _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id=""):
+def _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id="", roster_token=None):
     """人数上限检查 + INSERT（事务由调用方统一 COMMIT/ROLLBACK）。
 
     人数上限与 INSERT 同处一个写事务，原子执行，杜绝并发超额（TOCTOU 修复点）。
+    roster_token：一人一码场景下记录所用专属码，用于"该码已使用"精确判定。
     返回 signin_id。
     """
     cur = conn.cursor()
@@ -179,9 +180,9 @@ def _insert_signin(conn, session_row, token, field_data, now, client_ip, device_
 
     signin_id = str(uuid.uuid4())[:8]
     cur.execute(
-        """INSERT INTO signins (id, session_id, token, field_data, sign_in_time, ip_address, device_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (signin_id, session_row["id"], token, json.dumps(field_data, ensure_ascii=False), now, client_ip, device_id or None),
+        """INSERT INTO signins (id, session_id, token, field_data, sign_in_time, ip_address, device_id, roster_token)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (signin_id, session_row["id"], token, json.dumps(field_data, ensure_ascii=False), now, client_ip, device_id or None, roster_token),
     )
     return signin_id
 
@@ -215,20 +216,45 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
         conn.close()
         raise HTTPException(status_code=403, detail="签到已结束")
 
-    # Token 有效性校验（只读）
-    interval = row["refresh_interval"]
-    token_validity = interval + TOKEN_GRACE_PERIOD
+    # ============ Token 解析：优先判定是否为「一人一码」名单专属码 ============
+    # 名单专属码（roster.sign_token）绑定到具体名单条目身份，且只能成功使用一次；
+    # 非名单码走原 qr_tokens（大屏共享码，含 ~130s 有效期）。
     cur.execute(
-        "SELECT * FROM qr_tokens WHERE session_id = ? AND token = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT field_data, sign_token FROM roster WHERE session_id = ? AND sign_token = ? LIMIT 1",
         (session_id, data.token),
     )
-    token_row = cur.fetchone()
-    if not token_row:
-        conn.close()
-        raise HTTPException(status_code=403, detail="二维码无效或已过期，请重新扫描")
-    if (now - token_row["created_at"]) >= token_validity:
-        conn.close()
-        raise HTTPException(status_code=403, detail="二维码已过期，请重新扫描")
+    roster_row = cur.fetchone()
+    if roster_row:
+        # —— 一人一码：身份以名单条目为准（忽略提交字段），且一次性 ——
+        bound_field_data = json.loads(roster_row["field_data"])
+        cur.execute(
+            "SELECT id FROM signins WHERE session_id = ? AND roster_token = ?",
+            (session_id, data.token),
+        )
+        if cur.fetchone():
+            conn.close()
+            raise HTTPException(status_code=409, detail="该签到码已使用，请勿重复签到")
+        token_for_insert = data.token
+        field_data_for_insert = bound_field_data
+        roster_token_for_insert = data.token
+    else:
+        # —— 原逻辑：qr_tokens 共享码 ——
+        interval = row["refresh_interval"]
+        token_validity = interval + TOKEN_GRACE_PERIOD
+        cur.execute(
+            "SELECT * FROM qr_tokens WHERE session_id = ? AND token = ? ORDER BY created_at DESC LIMIT 1",
+            (session_id, data.token),
+        )
+        token_row = cur.fetchone()
+        if not token_row:
+            conn.close()
+            raise HTTPException(status_code=403, detail="二维码无效或已过期，请重新扫描")
+        if (now - token_row["created_at"]) >= token_validity:
+            conn.close()
+            raise HTTPException(status_code=403, detail="二维码已过期，请重新扫描")
+        token_for_insert = data.token
+        field_data_for_insert = data.field_data
+        roster_token_for_insert = None
 
     # ============ 临界区：去重 + 人数上限 + 写入（必须原子提交）============
     # 用 BEGIN IMMEDIATE 在「检查」之前就抢占写锁，彻底消除 TOCTOU 竞态：
@@ -236,7 +262,7 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
     conn.execute("BEGIN IMMEDIATE")
     try:
         client_ip = request.client.host if request.client else "unknown"
-        try_persist_signin(conn, row, data.token, data.field_data, now, client_ip, data.device_id)
+        try_persist_signin(conn, row, token_for_insert, field_data_for_insert, now, client_ip, data.device_id, roster_token_for_insert)
         conn.execute("COMMIT")
         conn.close()
         return {"status": "success", "sign_in_time": now}

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
+import { QRCodeSVG } from 'qrcode.react'
 import { getUser } from '../auth'
 
 const API = '/api'
@@ -496,6 +497,10 @@ function SessionDetail({ session, onBack, showToast }) {
   const [importing, setImporting] = useState(false)
   const [reconcile, setReconcile] = useState(null)
   const [reconLoading, setReconLoading] = useState(false)
+  // 一人一码：个人签到码弹窗
+  const [rosterQRCodes, setRosterQRCodes] = useState([])
+  const [showQRModal, setShowQRModal] = useState(false)
+  const [qrLoading, setQrLoading] = useState(false)
 
   useEffect(() => {
     // 载入已有名单概览，回填匹配列
@@ -507,6 +512,20 @@ function SessionDetail({ session, onBack, showToast }) {
       } catch (e) { /* 无名单时不报错 */ }
     })()
   }, [session.id])
+
+  // 拉取每位名单人员的专属签到码（一人一码），打开弹窗
+  const handleOpenRosterQR = async () => {
+    setQrLoading(true)
+    try {
+      const res = await axios.get(`${API}/sessions/${session.id}/roster/qrcodes`)
+      setRosterQRCodes(res.data.items || [])
+      setShowQRModal(true)
+    } catch (err) {
+      showToast(err.response?.data?.detail || '获取个人签到码失败', 'error')
+    } finally {
+      setQrLoading(false)
+    }
+  }
 
   const handleImportRoster = async () => {
     if (!rosterFile) { showToast('请先选择名单文件', 'error'); return }
@@ -742,6 +761,9 @@ function SessionDetail({ session, onBack, showToast }) {
             <button className="btn btn-success btn-sm" onClick={handleLoadReconcile} disabled={reconLoading}>
               {reconLoading ? '计算中...' : '生成校对报告'}
             </button>
+            <button className="btn btn-warning btn-sm" onClick={handleOpenRosterQR} disabled={qrLoading || !rosterInfo?.imported}>
+              {qrLoading ? '生成中...' : '生成个人签到码'}
+            </button>
             {reconcile && (
               <button className="btn btn-secondary btn-sm" onClick={handleExportReconcile}>⬇️ 导出校对 CSV</button>
             )}
@@ -768,6 +790,37 @@ function SessionDetail({ session, onBack, showToast }) {
             </div>
           )}
         </div>
+
+        {/* 一人一码：个人签到码弹窗 */}
+        {showQRModal && (
+          <div className="modal-overlay" onClick={() => setShowQRModal(false)}>
+            <div className="modal qr-sheet-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3>个人签到码（一人一码）</h3>
+                <button className="btn btn-secondary btn-sm" onClick={() => setShowQRModal(false)}>关闭</button>
+              </div>
+              <p>
+                每位人员一张专属二维码，扫码即以<b>本人身份</b>签到，且只能成功使用一次。
+                把码拍照发给别人，对方扫了也是以<b>你的身份</b>签到，无法冒签他人——从根本上杜绝代签/照片分享。
+                建议逐一发给本人，或点右下角「打印整页」后裁开发放。
+              </p>
+              <div className="qr-sheet-grid">
+                {rosterQRCodes.map((item) => (
+                  <div key={item.seq} className="qr-sheet-item">
+                    <QRCodeSVG value={item.url} size={120} level="M" includeMargin={true} />
+                    <div className="qr-sheet-name">{item.display}</div>
+                    <div className={`badge ${item.signed ? 'badge-active' : 'badge-pending'}`}>
+                      {item.signed ? '已签到' : '未签到'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ padding: '0 20px 16px', textAlign: 'right' }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => window.print()}>🖨️ 打印整页</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {records.records.length === 0 ? (
           <div className="empty-state">

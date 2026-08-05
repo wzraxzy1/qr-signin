@@ -49,6 +49,8 @@ def init_db():
             field_data TEXT NOT NULL,
             sign_in_time REAL NOT NULL,
             ip_address TEXT,
+            device_id TEXT,
+            roster_token TEXT,
             FOREIGN KEY (session_id) REFERENCES sessions(id)
         )
     """)
@@ -67,6 +69,7 @@ def init_db():
             session_id TEXT NOT NULL,
             seq INTEGER NOT NULL,
             field_data TEXT NOT NULL,
+            sign_token TEXT,
             FOREIGN KEY (session_id) REFERENCES sessions(id)
         )
     """)
@@ -110,6 +113,17 @@ def init_db():
         cur.execute("ALTER TABLE signins ADD COLUMN device_id TEXT")
     except Exception:
         pass  # column already exists
+    # Migration: add roster_token column to mark sign-ins made via a per-person roster QR
+    # (一人一码：该专属码只能成功使用一次，杜绝拍照分享冒签)
+    try:
+        cur.execute("ALTER TABLE signins ADD COLUMN roster_token TEXT")
+    except Exception:
+        pass  # column already exists
+    # Migration: add sign_token column to roster for per-person QR codes (一人一码)
+    try:
+        cur.execute("ALTER TABLE roster ADD COLUMN sign_token TEXT")
+    except Exception:
+        pass  # column already exists
     # Create default super admin on first run.
     # 安全基线：禁止回退到可猜测的默认密码（如旧版 "admin123"）。
     # 未设置 DEFAULT_ADMIN_PASSWORD 时，生成一次性随机密码并打印到启动日志（仅显示一次），
@@ -136,6 +150,14 @@ def init_db():
         "SELECT id FROM users WHERE role = 'super_admin' ORDER BY created_at ASC LIMIT 1"
         ") WHERE created_by IS NULL"
     )
+    # Backfill: roster entries imported before 一人一码 existed have no sign_token.
+    # Idempotent: only assign to rows where sign_token IS NULL.
+    cur.execute("SELECT id FROM roster WHERE sign_token IS NULL")
+    for r in cur.fetchall():
+        cur.execute(
+            "UPDATE roster SET sign_token = ? WHERE id = ?",
+            (uuid.uuid4().hex[:16], r["id"]),
+        )
     # Clean up tokens older than 5 minutes on startup
     cur.execute("DELETE FROM qr_tokens WHERE created_at < ?", (time.time() - 300,))
     conn.commit()
