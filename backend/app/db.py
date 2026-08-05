@@ -86,6 +86,11 @@ def init_db():
         cur.execute("ALTER TABLE sessions ADD COLUMN max_signins INTEGER")
     except Exception:
         pass  # column already exists
+    # Migration: add created_by column for per-user session isolation (optional)
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN created_by TEXT")
+    except Exception:
+        pass  # column already exists
     # Create default super admin on first run.
     # 安全基线：禁止回退到可猜测的默认密码（如旧版 "admin123"）。
     # 未设置 DEFAULT_ADMIN_PASSWORD 时，生成一次性随机密码并打印到启动日志（仅显示一次），
@@ -104,6 +109,14 @@ def init_db():
             "INSERT INTO users (id, username, password_hash, role, is_active, created_at) VALUES (?, ?, ?, 'super_admin', 1, ?)",
             (str(uuid.uuid4())[:12], default_user, hash_password(default_pass), time.time()),
         )
+    # Backfill: legacy sessions without an owner are attributed to the super admin
+    # (so existing data stays visible to the super admin and hidden from other admins).
+    # Idempotent: only touches rows where created_by is still NULL.
+    cur.execute(
+        "UPDATE sessions SET created_by = ("
+        "SELECT id FROM users WHERE role = 'super_admin' ORDER BY created_at ASC LIMIT 1"
+        ") WHERE created_by IS NULL"
+    )
     # Clean up tokens older than 5 minutes on startup
     cur.execute("DELETE FROM qr_tokens WHERE created_at < ?", (time.time() - 300,))
     conn.commit()

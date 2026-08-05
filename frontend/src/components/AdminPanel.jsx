@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
+import { getUser } from '../auth'
 
 const API = '/api'
 
@@ -58,6 +59,10 @@ export default function AdminPanel() {
   const [viewSession, setViewSession] = useState(null)
   const [toast, setToast] = useState(null)
   const [nowTick, setNowTick] = useState(Date.now())
+
+  // 当前登录用户角色：仅超级管理员能看到「创建者」列
+  const me = getUser()
+  const isSuper = me?.role === 'super_admin'
 
   // Create form state
   const [form, setForm] = useState({
@@ -360,6 +365,7 @@ export default function AdminPanel() {
                 <th>会话名称</th>
                 <th>刷新间隔</th>
                 <th>创建时间</th>
+                {isSuper && <th>创建者</th>}
                 <th>签到时间窗口</th>
                 <th>人数上限</th>
                 <th>状态</th>
@@ -374,6 +380,9 @@ export default function AdminPanel() {
                   <td>{s.name}</td>
                   <td>{s.refresh_interval}s</td>
                   <td>{new Date(s.created_at * 1000).toLocaleString('zh-CN')}</td>
+                  {isSuper && (
+                    <td>{s.created_by_username || '超级管理员'}</td>
+                  )}
                   <td style={{ fontSize: 13, color: 'var(--text-light)' }}>
                     开始 {fmtWindowTime(s.start_at)}<br />
                     停止 {fmtWindowTime(s.expires_at)}
@@ -426,6 +435,10 @@ function SessionDetail({ session, onBack, showToast }) {
   const [endInput, setEndInput] = useState(epochToLocalInput(session.expires_at))
   const [maxInput, setMaxInput] = useState(session.max_signins != null ? String(session.max_signins) : '')
   const [savingTime, setSavingTime] = useState(false)
+
+  // 仅超级管理员能看到创建者
+  const me = getUser()
+  const isSuper = me?.role === 'super_admin'
 
   const handleSaveTime = async () => {
     const sa = localInputToEpoch(startInput)
@@ -515,6 +528,12 @@ function SessionDetail({ session, onBack, showToast }) {
             </button>
           </div>
         </div>
+
+        {isSuper && session.created_by_username && (
+          <p style={{ fontSize: 13, color: 'var(--text-light)', marginTop: -8, marginBottom: 12 }}>
+            创建者：{session.created_by_username}
+          </p>
+        )}
 
         <div className="stats-grid">
           <div className="stat-card">

@@ -148,6 +148,14 @@ systemctl status qr-signin
 
 > 已上线的旧实例若当初用的是默认 `admin123`，请尽快在管理面板修改超管密码（新代码只约束「全新首次播种」，不会自动改已有账户）。
 
+#### 8.3.2 会话归属与多用户隔离（2026-08-05 新增）
+- **数据模型**：`sessions` 表新增 `created_by`（创建者用户 id）。`init_db` 在建表后做一次幂等回填——`created_by IS NULL` 的旧会话归属到首个超级管理员（保持旧数据对超管可见、对其他 admin 隐藏）。
+- **权限语义**：
+  - 普通 `admin`：只能看到 / 操作**自己创建**的会话（`list_sessions` 按 `created_by` 过滤；`get/update/delete/records/export/qr/stats` 越权访问一律 `404`）。
+  - `super_admin`：`GET /api/sessions` 返回**全部**会话，并 `LEFT JOIN users` 带出 `created_by_username`（创建者用户名）；可访问任意会话。
+- **前端**：管理页仅在当前用户为 `super_admin` 时显示「创建者」列（列表 + 详情）；普通 admin 看不到该列（本来也只能看到自己的）。
+- **部署注意**：`created_by` 是新迁移列，`git pull` + `systemctl restart` 后由 `init_db` 自动 `ALTER TABLE` 加列并回填，**无需手动改库**。纯后端改动，前端无变化时不必重新 `npm run build`。
+
 ### 8.4 常见部署坑（踩过即记，下次直接查表）
 
 #### 坑 1：本地 8000 端口被旧 uvicorn 占用（改了代码但新接口一直 404）

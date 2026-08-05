@@ -20,6 +20,20 @@ from ..schemas import SessionCreate, SessionUpdate
 router = APIRouter()
 
 
+def _owned_session(cur, session_id: str, user: dict):
+    """Return the session row if the user may access it, else None.
+
+    super_admin 可访问任意会话；普通 admin 仅能访问自己创建的（created_by = uid）。
+    不存在或无权限一律返回 None（调用方按 404 处理，避免泄露是否存在）。"""
+    cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    if user.get("role") != "super_admin" and row["created_by"] != user["uid"]:
+        return None
+    return row
+
+
 @router.post("/api/sessions")
 async def create_session(session: SessionCreate, user: dict = Depends(get_current_user)):
     session_id = str(uuid.uuid4())[:8]
@@ -27,8 +41,8 @@ async def create_session(session: SessionCreate, user: dict = Depends(get_curren
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, start_at, expires_at, max_signins)
-           VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
+        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, start_at, expires_at, max_signins, created_by)
+           VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
         (
             session_id,
             session.name,
@@ -38,6 +52,7 @@ async def create_session(session: SessionCreate, user: dict = Depends(get_curren
             session.start_at,
             session.expires_at,
             session.max_signins,
+            user["uid"],
         ),
     )
     conn.commit()
@@ -49,7 +64,18 @@ async def create_session(session: SessionCreate, user: dict = Depends(get_curren
 async def list_sessions(user: dict = Depends(get_current_user)):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM sessions ORDER BY created_at DESC")
+    # LEFT JOIN 出创建者用户名；普通 admin 仅看自己创建的，super_admin 看全部。
+    if user.get("role") == "super_admin":
+        cur.execute(
+            "SELECT s.*, u.username AS creator_username FROM sessions s "
+            "LEFT JOIN users u ON s.created_by = u.id ORDER BY s.created_at DESC"
+        )
+    else:
+        cur.execute(
+            "SELECT s.*, u.username AS creator_username FROM sessions s "
+            "LEFT JOIN users u ON s.created_by = u.id WHERE s.created_by = ? ORDER BY s.created_at DESC",
+            (user["uid"],),
+        )
     rows = cur.fetchall()
     sessions = []
     for row in rows:
@@ -63,6 +89,8 @@ async def list_sessions(user: dict = Depends(get_current_user)):
             "start_at": row["start_at"],
             "expires_at": row["expires_at"],
             "max_signins": row["max_signins"],
+            "created_by": row["created_by"],
+            "created_by_username": row["creator_username"],
         })
     conn.close()
     return {"sessions": sessions}
@@ -72,14 +100,15 @@ async def list_sessions(user: dict = Depends(get_current_user)):
 async def get_session(session_id: str, user: dict = Depends(get_current_user)):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
-    row = cur.fetchone()
+    row = _owned_session(cur, session_id, user)
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Session not found")
     # Get sign-in count
     cur.execute("SELECT COUNT(*) as cnt FROM signins WHERE session_id = ?", (session_id,))
     count = cur.fetchone()["cnt"]
+    cur.execute("SELECT username FROM users WHERE id = ?", (row["created_by"],))
+    creator = cur.fetchone()
     conn.close()
     return {
         "id": row["id"],
@@ -91,6 +120,8 @@ async def get_session(session_id: str, user: dict = Depends(get_current_user)):
         "start_at": row["start_at"],
         "expires_at": row["expires_at"],
         "max_signins": row["max_signins"],
+        "created_by": row["created_by"],
+        "created_by_username": creator["username"] if creator else None,
         "sign_in_count": count,
     }
 
@@ -99,8 +130,7 @@ async def get_session(session_id: str, user: dict = Depends(get_current_user)):
 async def update_session(session_id: str, update: SessionUpdate, user: dict = Depends(get_current_user)):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
-    row = cur.fetchone()
+    row = _owned_session(cur, session_id, user)
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Session not found")
@@ -142,6 +172,10 @@ async def update_session(session_id: str, update: SessionUpdate, user: dict = De
 async def delete_session(session_id: str, user: dict = Depends(get_current_user)):
     conn = get_db()
     cur = conn.cursor()
+    row = _owned_session(cur, session_id, user)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
     cur.execute("DELETE FROM signins WHERE session_id = ?", (session_id,))
     cur.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     conn.commit()
@@ -152,6 +186,13 @@ async def delete_session(session_id: str, user: dict = Depends(get_current_user)
 @router.get("/api/sessions/{session_id}/qr")
 async def get_qr_info(session_id: str, request: Request, user: dict = Depends(get_current_user)):
     """获取当前 QR 码信息"""
+    conn = get_db()
+    cur = conn.cursor()
+    row = _owned_session(cur, session_id, user)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    conn.close()
     token_info = get_current_token(session_id)
     # Build the sign-in URL
     base_url = str(request.base_url).rstrip("/")
@@ -195,14 +236,14 @@ async def get_records(session_id: str, user: dict = Depends(get_current_user)):
     """获取签到记录"""
     conn = get_db()
     cur = conn.cursor()
+    row = _owned_session(cur, session_id, user)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
     cur.execute("SELECT * FROM signins WHERE session_id = ? ORDER BY sign_in_time ASC", (session_id,))
     rows = cur.fetchall()
-    # Get session for field config
-    cur.execute("SELECT fields_config, name FROM sessions WHERE id = ?", (session_id,))
-    session = cur.fetchone()
+    session = {"fields_config": row["fields_config"], "name": row["name"]}
     conn.close()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
 
     fields_config = json.loads(session["fields_config"])
     records = []
@@ -230,13 +271,14 @@ async def export_records(session_id: str, user: dict = Depends(get_current_user)
     """导出签到记录为 CSV"""
     conn = get_db()
     cur = conn.cursor()
+    row = _owned_session(cur, session_id, user)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
     cur.execute("SELECT * FROM signins WHERE session_id = ? ORDER BY sign_in_time ASC", (session_id,))
     rows = cur.fetchall()
-    cur.execute("SELECT fields_config, name FROM sessions WHERE id = ?", (session_id,))
-    session = cur.fetchone()
+    session = {"fields_config": row["fields_config"], "name": row["name"]}
     conn.close()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
 
     fields_config = json.loads(session["fields_config"])
 
@@ -277,9 +319,9 @@ async def get_session_stats(session_id: str, user: dict = Depends(get_current_us
     """查看单个会话的签到概况（需登录）"""
     conn = get_db()
     cur = conn.cursor()
-    # 1) 会话是否存在
-    cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
-    if not cur.fetchone():
+    # 1) 会话是否存在且当前用户有权访问
+    row = _owned_session(cur, session_id, user)
+    if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Session not found")
     # 2) 聚合签到数据
