@@ -174,6 +174,14 @@ systemctl status qr-signin
 - **前端**：会话详情页新增「名单导入与签到校对」卡片——下载模板、选文件 + 选匹配列、导入名单、生成校对报告（三类带计数表格）、导出校对 CSV。
 - **权限**：名单 / 校对接口同样走 `_owned_session`，普通 admin 只能操作自己会话，越权 `404`。
 
+#### 8.3.4 防作弊：同一设备同一会话只能签到一次（2026-08-05 新增）
+- **语义**：按用户确认，范围是「**同一签到会话内**」——同一台设备在同一场签到里，无论重扫几次码、换几个身份都只能成功一次；不同场次互不干扰。设备识别用「**前端 localStorage 设备指纹**」。
+- **数据模型**：`signins` 表新增 `device_id` 列（幂等迁移，旧记录为 NULL）。
+- **后端**：`SignInSubmit` 新增可选 `device_id`（默认空，向后兼容旧前端 / 非浏览器）。在 `submit_signin` 的 `BEGIN IMMEDIATE` 临界区最前面做设备去重——仅当 `device_id` 非空时，`SELECT ... WHERE session_id=? AND device_id=?` 命中即 `409 该设备已签到`，独立于身份 / token 去重。
+- **前端**：`SignInPage.jsx` 用 `getDeviceId()` 在 `localStorage` 键 `qr_signin_device_id` 生成**持久**设备指纹（不随 token / session 变化），每次签到随 `device_id` 上报；成功 / 被拒时额外写 `qr_signin_device_signed_${sessionId}` 标记，重扫新码重新进入也能即时提示「已签到」。
+- **已知边界（震慑性，非绝对）**：清浏览器缓存会一并清掉设备指纹 → 前端重新生成新 id → 绕过设备去重。属防作弊的「提高作弊成本」，不是密码学级防重。如需更强，可叠加 IP / 浏览器指纹库，但共享网络下会误伤多人，按场景权衡。
+- **测试**：`backend/tests/test_signin.py` 新增 4 例——同设备换身份 / 匿名换 token → 409；不同设备 → 放行；未传 `device_id` → 退回原去重。
+
 ### 8.4 常见部署坑（踩过即记，下次直接查表）
 
 #### 坑 1：本地 8000 端口被旧 uvicorn 占用（改了代码但新接口一直 404）

@@ -31,7 +31,7 @@ class _RejectSignin(Exception):
         self.detail = detail
 
 
-def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
+def try_persist_signin(conn, session_row, token, field_data, now, client_ip, device_id=""):
     """在调用方已开启的写事务内完成 去重 + 人数上限 + INSERT。
 
     不负责 BEGIN/COMMIT——事务边界由 submit_signin 统一控制，以保证原子性。
@@ -39,6 +39,20 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
     抽成独立函数是为了让并发 TOCTOU 回归测试能直接驱动真实代码路径。
     """
     cur = conn.cursor()
+
+    # ============ 防作弊：同一设备同一会话只能成功签到一次 ============
+    # 独立于身份去重：即便换 token（重扫新码）或换身份，只要 device_id 相同即拦截，
+    # 堵住"同一台手机替多人签到"的漏洞。device_id 为空（旧前端/非浏览器）时跳过，
+    # 退回原有的 token/身份去重，向后兼容。
+    if device_id:
+        cur.execute(
+            "SELECT id FROM signins WHERE session_id = ? AND device_id = ?",
+            (session_row["id"], device_id),
+        )
+        if cur.fetchone():
+            raise _RejectSignin(
+                409, "该设备已签到，请勿重复签到（如需为他人签到，请换一台设备）"
+            )
 
     # ============ 反重复签到（多人共码语义）============
     # 产品规则：同一张二维码允许「多个不同的人」签到（大屏一码多人扫），
@@ -65,7 +79,7 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
             raise _RejectSignin(
                 409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
             )
-        return _insert_signin(conn, session_row, token, field_data, now, client_ip)
+        return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id)
 
     # ---- 多人会话：身份去重 ----
     # 身份候选字段非空值 -> 复合键去重
@@ -87,7 +101,7 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
                 raise _RejectSignin(
                     409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
                 )
-            return _insert_signin(conn, session_row, token, field_data, now, client_ip)
+            return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id)
         key_fields = list(non_empty.keys())
 
     if key_fields:
@@ -122,10 +136,10 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip):
         if cur.fetchone():
             raise _RejectSignin(409, f"该{label}已签到，请勿重复签到")
 
-    return _insert_signin(conn, session_row, token, field_data, now, client_ip)
+    return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id)
 
 
-def _insert_signin(conn, session_row, token, field_data, now, client_ip):
+def _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id=""):
     """人数上限检查 + INSERT（事务由调用方统一 COMMIT/ROLLBACK）。
 
     人数上限与 INSERT 同处一个写事务，原子执行，杜绝并发超额（TOCTOU 修复点）。
@@ -143,9 +157,9 @@ def _insert_signin(conn, session_row, token, field_data, now, client_ip):
 
     signin_id = str(uuid.uuid4())[:8]
     cur.execute(
-        """INSERT INTO signins (id, session_id, token, field_data, sign_in_time, ip_address)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (signin_id, session_row["id"], token, json.dumps(field_data, ensure_ascii=False), now, client_ip),
+        """INSERT INTO signins (id, session_id, token, field_data, sign_in_time, ip_address, device_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (signin_id, session_row["id"], token, json.dumps(field_data, ensure_ascii=False), now, client_ip, device_id or None),
     )
     return signin_id
 
@@ -198,7 +212,7 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
     conn.execute("BEGIN IMMEDIATE")
     try:
         client_ip = request.client.host if request.client else "unknown"
-        try_persist_signin(conn, row, data.token, data.field_data, now, client_ip)
+        try_persist_signin(conn, row, data.token, data.field_data, now, client_ip, data.device_id)
         conn.execute("COMMIT")
         conn.close()
         return {"status": "success", "sign_in_time": now}

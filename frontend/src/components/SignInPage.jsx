@@ -4,6 +4,24 @@ import { useSearchParams } from 'react-router-dom'
 
 const API = '/api'
 
+// 设备指纹：每台浏览器生成一次并持久化在 localStorage，不随 token / session 变化。
+// 随每次签到上报给后端，用于"同一设备在同一会话内只能成功签到一次"的防作弊校验。
+// 注：清浏览器缓存可重置该指纹（属震慑性防作弊，非绝对不可破解）。
+function getDeviceId() {
+  let id = localStorage.getItem('qr_signin_device_id')
+  if (!id) {
+    try {
+      id = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID()
+        : `dev_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    } catch (e) {
+      id = `dev_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    }
+    localStorage.setItem('qr_signin_device_id', id)
+  }
+  return id
+}
+
 export default function SignInPage() {
   const [searchParams] = useSearchParams()
   const sessionId = searchParams.get('session')
@@ -22,6 +40,9 @@ export default function SignInPage() {
   // 已签到卡片上展示的具体原因（默认文案兜底；409 时展示后端返回的真实原因）
   const [signedNote, setSignedNote] = useState('')
   const signedKey = `qr_signin_signed_${sessionId}_${token}`
+  // 设备级已签标记（不随 token 变化）：重扫新码重新进入时也能即时提示"已签到"，
+  // 与后端设备去重互为表里（前端即时反馈、后端权威拦截）。
+  const deviceSignedKey = `qr_signin_device_signed_${sessionId}`
 
   // 评估签到时间窗口：未开始/已结束/已关闭 -> 不允许签到
   const evaluateWindow = (data) => {
@@ -66,10 +87,10 @@ export default function SignInPage() {
       setLoading(false)
       return
     }
-    // 该二维码已成功签到过 -> 直接展示“已签到”，不再出现表单
-    if (localStorage.getItem(signedKey) === '1') {
+    // 该二维码已成功签到过，或本设备本场签到已签过（重扫新码）-> 直接展示“已签到”
+    if (localStorage.getItem(signedKey) === '1' || localStorage.getItem(deviceSignedKey) === '1') {
       setAlreadySigned(true)
-      setSignedNote('该二维码已成功签到，请勿重复签到。')
+      setSignedNote('该设备已成功签到，请勿重复签到。如需为他人签到，请换一台设备。')
       setLoading(false)
       return
     }
@@ -103,9 +124,11 @@ export default function SignInPage() {
       const res = await axios.post(`${API}/sessions/${sessionId}/signin`, {
         token,
         field_data: formData,
+        device_id: getDeviceId(),
       })
       if (res.data.status === 'success') {
         localStorage.setItem(signedKey, '1')
+        localStorage.setItem(deviceSignedKey, '1')
         setResult('success')
       }
     } catch (err) {
@@ -114,7 +137,8 @@ export default function SignInPage() {
       if (status === 409) {
         // 409 分两类，不能一概而论：
         // ① 人数已满 —— 用户并未签到成功，按普通失败展示（绝不标“已签到”）；
-        // ② 该身份已签到（同 token 一码一签 / 身份证/工号等强唯一字段重复）——
+        // ② 该身份/该设备已签到（同 token 一码一签 / 身份证/工号等强唯一字段重复 /
+        //    同一设备重复进入）——
         //    写“已签到”标记防再次提交，并展示后端返回的真实原因，避免误导。
         if (detail.includes('已满')) {
           setErrorMsg(detail)
@@ -122,6 +146,7 @@ export default function SignInPage() {
           return
         }
         localStorage.setItem(signedKey, '1')
+        localStorage.setItem(deviceSignedKey, '1')
         setAlreadySigned(true)
         setSignedNote(detail)
         setErrorMsg('')

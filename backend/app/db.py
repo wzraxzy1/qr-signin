@@ -105,6 +105,11 @@ def init_db():
         cur.execute("ALTER TABLE sessions ADD COLUMN roster_match_field TEXT")
     except Exception:
         pass  # column already exists
+    # Migration: add device_id column for anti-cheat (one device signs at most once per session)
+    try:
+        cur.execute("ALTER TABLE signins ADD COLUMN device_id TEXT")
+    except Exception:
+        pass  # column already exists
     # Create default super admin on first run.
     # 安全基线：禁止回退到可猜测的默认密码（如旧版 "admin123"）。
     # 未设置 DEFAULT_ADMIN_PASSWORD 时，生成一次性随机密码并打印到启动日志（仅显示一次），

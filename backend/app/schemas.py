@@ -28,6 +28,10 @@ class SessionUpdate(BaseModel):
 class SignInSubmit(BaseModel):
     token: str
     field_data: Dict[str, Any]
+    # 设备指纹（防作弊：同一台设备在同一会话内只能成功签到一次）。
+    # 由前端生成并持久化在 localStorage，不随 token 变化；旧前端/非浏览器客户端
+    # 可不传（默认空），此时跳过设备维度去重，向后兼容现有行为。
+    device_id: str = ""
 
 
 class LoginRequest(BaseModel):

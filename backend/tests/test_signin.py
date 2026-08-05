@@ -46,10 +46,10 @@ def _seed_token(session_id, token_value="TKN", age=0):
     return token_value
 
 
-def _submit(client, session_id, token, field_data):
+def _submit(client, session_id, token, field_data, device_id=""):
     return client.post(
         f"/api/sessions/{session_id}/signin",
-        json={"token": token, "field_data": field_data},
+        json={"token": token, "field_data": field_data, "device_id": device_id},
     )
 
 
@@ -256,3 +256,60 @@ def test_export_masks_id_card(client):
     body = r.text
     assert "330102199003078888" not in body   # 明文身份证号不得出现在导出中
     assert "3301**********8888" in body        # 应出现脱敏后的形式
+
+
+def test_device_single_use_per_session(client):
+    """防作弊核心回归：同一 device_id 在同一会话内只能成功签到一次，
+    即便换 token（重扫新码）或换身份也拦截。"""
+    token = _login(client)
+    sid = _create_session(client, token)
+    t = _seed_token(sid)
+    # 设备 D1 首次签到（身份 A）
+    assert _submit(client, sid, t, {"name": "张三", "phone": "1"}, device_id="D1").status_code == 200
+    # 同设备 D1、换新 token、换身份 B -> 必须 409「该设备已签到」
+    t2 = _seed_token(sid, token_value="TKN2")
+    r2 = _submit(client, sid, t2, {"name": "李四", "phone": "2"}, device_id="D1")
+    assert r2.status_code == 409
+    assert "该设备已签到" in r2.json()["detail"]
+
+
+def test_different_device_allowed(client):
+    """防作弊边界：不同 device_id 视为不同设备，应放行（不要误伤多台手机）。"""
+    token = _login(client)
+    sid = _create_session(client, token)
+    t = _seed_token(sid)
+    assert _submit(client, sid, t, {"name": "张三", "phone": "1"}, device_id="D1").status_code == 200
+    # 设备 D2（另一台手机）签到 -> 应成功
+    assert _submit(client, sid, t, {"name": "李四", "phone": "2"}, device_id="D2").status_code == 200
+    conn = app_module.get_db()
+    cnt = conn.execute(
+        "SELECT COUNT(*) FROM signins WHERE session_id = ?", (sid,)
+    ).fetchone()[0]
+    conn.close()
+    assert cnt == 2
+
+
+def test_anonymous_session_device_single_use(client):
+    """匿名会话 + 设备指纹：同一设备即便换 token 重扫也被拦（旧逻辑下换 token 可再签）。"""
+    token = _login(client)
+    sid = _create_session(client, token, fields_config=[])
+    t = _seed_token(sid)
+    assert _submit(client, sid, t, {}, device_id="D1").status_code == 200
+    # 同设备、换 token -> 409「该设备已签到」
+    t2 = _seed_token(sid, token_value="TKN2")
+    r2 = _submit(client, sid, t2, {}, device_id="D1")
+    assert r2.status_code == 409
+    assert "该设备已签到" in r2.json()["detail"]
+    # 不同设备、换 token -> 放行
+    assert _submit(client, sid, t2, {}, device_id="D2").status_code == 200
+
+
+def test_empty_device_id_skips_device_check(client):
+    """兼容：未传 device_id（旧前端/非浏览器）时跳过设备去重，退回原有 token/身份去重。"""
+    token = _login(client)
+    sid = _create_session(client, token, fields_config=[])
+    t = _seed_token(sid)
+    assert _submit(client, sid, t, {}).status_code == 200
+    # 未传 device_id、换 token -> 走匿名一码一签逻辑，新 token 允许
+    t2 = _seed_token(sid, token_value="TKN2")
+    assert _submit(client, sid, t2, {}).status_code == 200
