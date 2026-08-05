@@ -10,6 +10,8 @@
     再各自 INSERT，导致签到人数超额。这里改用 BEGIN IMMEDIATE 在「检查」前
     就抢占写锁，将 Check→Use 的时间窗折叠为零。
 """
+import os
+import re
 import time
 import uuid
 import json
@@ -21,6 +23,26 @@ from ..db import get_db
 from ..schemas import SignInSubmit
 
 router = APIRouter()
+
+# 仅允许微信内置浏览器提交签到（企业微信 wxwork 不在放行范围）。
+# 注意：UA 可被伪造，此处只是"提高绕过成本"的震慑级防护，
+# 与生产意义上"防作弊"一致（并非密码学级）。
+_WECHAT_UA_RE = re.compile(r"micromessenger", re.IGNORECASE)
+
+
+def _require_wechat(request: Request):
+    """仅 production 环境强制要求微信内置浏览器 UA；开发/测试环境放行便于调试。
+
+    绕过方式：非微信 UA 直接打 API 会被这里拦下（403），无法仅靠改前端绕过。
+    """
+    if os.getenv("APP_ENV", "production") != "production":
+        return
+    ua = request.headers.get("user-agent", "") or ""
+    if not _WECHAT_UA_RE.search(ua):
+        raise HTTPException(
+            status_code=403,
+            detail="请在微信中打开本页面后再签到（本签到仅支持微信内置浏览器）",
+        )
 
 
 class _RejectSignin(Exception):
@@ -167,6 +189,8 @@ def _insert_signin(conn, session_row, token, field_data, now, client_ip, device_
 @router.post("/api/sessions/{session_id}/signin")
 async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
     """提交签到"""
+    # 仅允许微信内置浏览器提交（企业微信不在放行范围）；非生产环境放行便于调试
+    _require_wechat(request)
     conn = get_db()
     # 手动控制事务：默认 isolation_level="" 会在首条 DML 隐式 BEGIN（deferred），
     # 与下方显式 BEGIN IMMEDIATE 冲突。设为 None 后由我们完全掌控事务边界。

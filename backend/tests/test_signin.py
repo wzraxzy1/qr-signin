@@ -313,3 +313,34 @@ def test_empty_device_id_skips_device_check(client):
     # 未传 device_id、换 token -> 走匿名一码一签逻辑，新 token 允许
     t2 = _seed_token(sid, token_value="TKN2")
     assert _submit(client, sid, t2, {}).status_code == 200
+
+
+def test_wechat_only_rejects_non_wechat_in_production(client):
+    """仅微信打开：production 环境下，非微信 UA 提交被 403 拦下；微信 UA 放行。
+
+    通过临时把 APP_ENV 切到 production 驱动真实校验分支；
+    开发/测试环境（默认 APP_ENV=test）不触发，避免日常测试被误伤。
+    """
+    import os
+    token = _login(client)
+    sid = _create_session(client, token)
+    t = _seed_token(sid)
+    old = os.environ.get("APP_ENV")
+    os.environ["APP_ENV"] = "production"
+    try:
+        # 非微信 UA（TestClient 默认 UA 不含 MicroMessenger）-> 403
+        r = _submit(client, sid, t, {"name": "张三", "phone": "1"})
+        assert r.status_code == 403, r.text
+        assert "微信" in r.json()["detail"]
+        # 微信 UA -> 放行（不同身份，避免被身份去重拦）
+        r2 = client.post(
+            f"/api/sessions/{sid}/signin",
+            json={"token": t, "field_data": {"name": "李四", "phone": "2"}},
+            headers={"user-agent": "Mozilla/5.0 MicroMessenger/8.0.40"},
+        )
+        assert r2.status_code == 200, r2.text
+    finally:
+        if old is None:
+            os.environ.pop("APP_ENV", None)
+        else:
+            os.environ["APP_ENV"] = old

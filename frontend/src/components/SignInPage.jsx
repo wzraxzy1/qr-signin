@@ -4,6 +4,13 @@ import { useSearchParams } from 'react-router-dom'
 
 const API = '/api'
 
+// 仅允许微信内置浏览器打开（企业微信 wxwork 不在放行范围）。
+// URL 带 ?bypass=1 可临时绕过，方便调试与特殊情况。
+function isWeChat() {
+  if (typeof navigator === 'undefined') return false
+  return /micromessenger/i.test(navigator.userAgent)
+}
+
 // 设备指纹：每台浏览器生成一次并持久化在 localStorage，不随 token / session 变化。
 // 随每次签到上报给后端，用于"同一设备在同一会话内只能成功签到一次"的防作弊校验。
 // 注：清浏览器缓存可重置该指纹（属震慑性防作弊，非绝对不可破解）。
@@ -26,8 +33,10 @@ export default function SignInPage() {
   const [searchParams] = useSearchParams()
   const sessionId = searchParams.get('session')
   const token = searchParams.get('token')
+  const bypassWeChat = searchParams.get('bypass') === '1'
 
   const [session, setSession] = useState(null)
+  const [notWeChat, setNotWeChat] = useState(false)
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState(null) // 'success' | 'error' | null
@@ -87,6 +96,13 @@ export default function SignInPage() {
       setLoading(false)
       return
     }
+    // 仅允许微信内置浏览器打开（企业微信不在放行范围）。
+    // ?bypass=1 可临时绕过，便于调试/特殊情况。
+    if (!isWeChat() && !bypassWeChat) {
+      setNotWeChat(true)
+      setLoading(false)
+      return
+    }
     // 该二维码已成功签到过，或本设备本场签到已签过（重扫新码）-> 直接展示“已签到”
     if (localStorage.getItem(signedKey) === '1' || localStorage.getItem(deviceSignedKey) === '1') {
       setAlreadySigned(true)
@@ -95,7 +111,7 @@ export default function SignInPage() {
       return
     }
     fetchSession()
-  }, [sessionId, token, fetchSession, signedKey])
+  }, [sessionId, token, fetchSession, signedKey, bypassWeChat])
 
   // 未开始时定时轮询，到达开始时间后自动开放表单
   useEffect(() => {
@@ -169,6 +185,22 @@ export default function SignInPage() {
       <div className="signin-container">
         <div className="signin-card">
           <div className="empty-state">加载中...</div>
+        </div>
+      </div>
+    )
+  }
+
+  if (notWeChat) {
+    return (
+      <div className="signin-container">
+        <div className="signin-card">
+          <div className="empty-state">
+            <div className="empty-icon">📱</div>
+            <p>请在微信中打开</p>
+            <p style={{ fontSize: 13, marginTop: 8 }}>
+              本签到仅支持微信内置浏览器，请用微信扫描二维码后打开
+            </p>
+          </div>
         </div>
       </div>
     )

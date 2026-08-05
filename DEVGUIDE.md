@@ -182,6 +182,14 @@ systemctl status qr-signin
 - **已知边界（震慑性，非绝对）**：清浏览器缓存会一并清掉设备指纹 → 前端重新生成新 id → 绕过设备去重。属防作弊的「提高作弊成本」，不是密码学级防重。如需更强，可叠加 IP / 浏览器指纹库，但共享网络下会误伤多人，按场景权衡。
 - **测试**：`backend/tests/test_signin.py` 新增 4 例——同设备换身份 / 匿名换 token → 409；不同设备 → 放行；未传 `device_id` → 退回原去重。
 
+#### 8.3.5 仅微信打开（2026-08-05 新增）
+- **语义**：按用户确认——「**仅微信内置浏览器**」打开 / 提交（**企业微信 wxwork 不在放行范围**），且「**前端提示页 + 后端提交也拦**」双保险。
+- **原理**：微信内置浏览器的 UA 含 `MicroMessenger` 字样；企业微信含 `wxwork` 但不含 `MicroMessenger`，故只认 `MicroMessenger` 即可把企业微信排除在外。
+- **前端**：`SignInPage.jsx` 用 `isWeChat()`（`/micromessenger/i.test(navigator.userAgent)`）在加载签到页前判断；非微信即渲染「📱 请在微信中打开」提示页，不拉取会话、不渲染表单。URL 带 `?bypass=1` 可临时绕过（调试 / 特殊情况）。
+- **后端**：`signin.py` 新增 `_require_wechat(request)`，在 `submit_signin` 最前面校验 `user-agent`。**仅 `APP_ENV=production` 生效**；开发 / 测试环境（默认 `APP_ENV=test`）放行，避免调试被误伤。非微信 UA 直接打 API 会被 `403 请在微信中打开本页面后再签到` 拦下，无法仅靠改前端绕过。
+- **已知边界（震慑性，非绝对）**：UA 可被伪造，属「提高绕过成本」，与设备指纹同样的定位。管理员后台（AdminPanel）**不受影响**，仍可在 PC 浏览器管理。
+- **测试**：`test_signin.py` 新增 `test_wechat_only_rejects_non_wechat_in_production`——临时切 `APP_ENV=production`，非微信 UA → 403、微信 UA → 200，finally 还原环境变量。
+
 ### 8.4 常见部署坑（踩过即记，下次直接查表）
 
 #### 坑 1：本地 8000 端口被旧 uvicorn 占用（改了代码但新接口一直 404）
