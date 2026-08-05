@@ -489,6 +489,114 @@ function SessionDetail({ session, onBack, showToast }) {
     }
   }
 
+  // ---- 名单导入 / 校对 ----
+  const [rosterFile, setRosterFile] = useState(null)
+  const [matchField, setMatchField] = useState('')
+  const [rosterInfo, setRosterInfo] = useState(null)
+  const [importing, setImporting] = useState(false)
+  const [reconcile, setReconcile] = useState(null)
+  const [reconLoading, setReconLoading] = useState(false)
+
+  useEffect(() => {
+    // 载入已有名单概览，回填匹配列
+    (async () => {
+      try {
+        const r = await axios.get(`${API}/sessions/${session.id}/roster`)
+        setRosterInfo(r.data)
+        if (r.data.match_field) setMatchField(r.data.match_field)
+      } catch (e) { /* 无名单时不报错 */ }
+    })()
+  }, [session.id])
+
+  const handleImportRoster = async () => {
+    if (!rosterFile) { showToast('请先选择名单文件', 'error'); return }
+    if (!matchField) { showToast('请选择匹配列', 'error'); return }
+    setImporting(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', rosterFile)
+      fd.append('match_field', matchField)
+      const res = await axios.post(`${API}/sessions/${session.id}/roster`, fd)
+      setRosterInfo({ count: res.data.count, match_field: res.data.match_field, imported: true })
+      setReconcile(null)
+      showToast(`已导入 ${res.data.count} 条名单`, 'success')
+    } catch (err) {
+      const msg = err.response?.data?.detail || '导入失败'
+      showToast(msg, 'error')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const handleLoadReconcile = async () => {
+    setReconLoading(true)
+    try {
+      const res = await axios.get(`${API}/sessions/${session.id}/reconcile`)
+      setReconcile(res.data)
+    } catch (err) {
+      const msg = err.response?.data?.detail || '校对失败'
+      showToast(msg, 'error')
+    } finally {
+      setReconLoading(false)
+    }
+  }
+
+  const handleExportReconcile = async () => {
+    try {
+      const res = await axios.get(`${API}/sessions/${session.id}/reconcile/export`, { responseType: 'blob' })
+      const url = window.URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      const cd = res.headers['content-disposition'] || ''
+      let fname = `reconcile_${session.name}.csv`
+      const m = cd.match(/filename\*=UTF-8''([^;]+)/) || cd.match(/filename="?([^";]+)"?/)
+      if (m) fname = decodeURIComponent(m[1])
+      a.download = fname
+      document.body.appendChild(a); a.click(); a.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (err) { showToast('导出失败，请重试', 'error') }
+  }
+
+  const handleDownloadTemplate = () => {
+    const labels = (session.fields_config || []).map(f => f.label).join(',')
+    const csv = '﻿' + labels + '\n'
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `名单模板_${session.name}.csv`
+    document.body.appendChild(a); a.click(); a.remove()
+    window.URL.revokeObjectURL(url)
+  }
+
+  const renderReconcileTable = (title, list, matchFieldVal, withTime) => {
+    if (!list || list.length === 0) return null
+    const cols = (session.fields_config || []).filter(f => f.name !== matchFieldVal)
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <div className="card-title" style={{ fontSize: 14, marginTop: 10 }}>{title}（{list.length}）</div>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table">
+            <thead>
+              <tr>
+                {cols.map(f => <th key={f.name}>{f.label}</th>)}
+                {withTime && <th>签到时间</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((row, i) => (
+                <tr key={i}>
+                  {cols.map(f => <td key={f.name}>{row[f.name]}</td>)}
+                  {withTime && <td>{row._time_str || ''}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -598,6 +706,67 @@ function SessionDetail({ session, onBack, showToast }) {
           <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 10 }}>
             时间留空表示不限制：未到开始时间不可签到、超过停止时间自动停止签到。人数上限留空表示不限制，填写正整数后达到上限将自动拒绝新签到。
           </p>
+        </div>
+
+        {/* 名单导入与校对 */}
+        <div className="card" style={{ marginTop: 20 }}>
+          <div className="card-title">
+            <span>名单导入与签到校对</span>
+            <button className="btn btn-secondary btn-sm" onClick={handleDownloadTemplate}>⬇️ 下载模板</button>
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: -4, marginBottom: 12 }}>
+            导入参会人员名单后，可一键比对「谁已签到 / 谁未到 / 名单外签到」。匹配列用于把名单与签到记录对应（建议选工号 / 身份证 / 学号等唯一字段）。
+          </p>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">选择名单文件（.csv / .xlsx）</label>
+              <input type="file" accept=".csv,.xlsx" onChange={(e) => setRosterFile(e.target.files[0])} />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">匹配列</label>
+              <select
+                className="form-input"
+                value={matchField}
+                onChange={(e) => setMatchField(e.target.value)}
+                style={{ maxWidth: 220 }}
+              >
+                <option value="">请选择</option>
+                {(session.fields_config || []).map((f) => (
+                  <option key={f.name} value={f.name}>{f.label}（{f.name}）</option>
+                ))}
+              </select>
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={handleImportRoster} disabled={importing}>
+              {importing ? '导入中...' : '导入名单'}
+            </button>
+            <button className="btn btn-success btn-sm" onClick={handleLoadReconcile} disabled={reconLoading}>
+              {reconLoading ? '计算中...' : '生成校对报告'}
+            </button>
+            {reconcile && (
+              <button className="btn btn-secondary btn-sm" onClick={handleExportReconcile}>⬇️ 导出校对 CSV</button>
+            )}
+          </div>
+          {rosterInfo?.imported && (
+            <p style={{ fontSize: 13, color: 'var(--text-light)', marginTop: 10 }}>
+              已导入名单 {rosterInfo.count} 条，匹配列：{rosterInfo.match_field}
+            </p>
+          )}
+
+          {reconcile && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', gap: 16, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span className="badge badge-active">已到 {reconcile.counts.present}</span>
+                <span className="badge badge-pending">未到 {reconcile.counts.absent}</span>
+                <span className="badge badge-closed">名单外 {reconcile.counts.extra}</span>
+                <span style={{ fontSize: 12, color: 'var(--text-light)' }}>
+                  名单 {reconcile.roster_total} 人 · 签到 {reconcile.signin_total} 人 · 匹配列：{reconcile.match_field_label}
+                </span>
+              </div>
+              {renderReconcileTable('未到（名单内但未签到）', reconcile.absent, reconcile.match_field, false)}
+              {renderReconcileTable('已到（名单内且已签到）', reconcile.present, reconcile.match_field, true)}
+              {renderReconcileTable('名单外（签到但不在名单）', reconcile.extra, reconcile.match_field, true)}
+            </div>
+          )}
         </div>
 
         {records.records.length === 0 ? (

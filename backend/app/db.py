@@ -62,6 +62,15 @@ def init_db():
         )
     """)
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS roster (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            field_data TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id)
+        )
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
@@ -89,6 +98,11 @@ def init_db():
     # Migration: add created_by column for per-user session isolation (optional)
     try:
         cur.execute("ALTER TABLE sessions ADD COLUMN created_by TEXT")
+    except Exception:
+        pass  # column already exists
+    # Migration: add roster_match_field column to remember which field the roster matches on
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN roster_match_field TEXT")
     except Exception:
         pass  # column already exists
     # Create default super admin on first run.

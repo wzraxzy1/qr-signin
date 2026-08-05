@@ -156,6 +156,24 @@ systemctl status qr-signin
 - **前端**：管理页仅在当前用户为 `super_admin` 时显示「创建者」列（列表 + 详情）；普通 admin 看不到该列（本来也只能看到自己的）。
 - **部署注意**：`created_by` 是新迁移列，`git pull` + `systemctl restart` 后由 `init_db` 自动 `ALTER TABLE` 加列并回填，**无需手动改库**。纯后端改动，前端无变化时不必重新 `npm run build`。
 
+#### 8.3.3 名单导入与签到校对（2026-08-05 新增）
+- **新增依赖**：`openpyxl`（解析 .xlsx）、`python-multipart`（接收上传文件）。部署时记得在 venv 里 `pip install -r requirements.txt`。
+- **数据模型**：新增 `roster` 表（`session_id, seq, field_data`）；`sessions` 表新增 `roster_match_field`（记录用哪一列匹配）。均由 `init_db` 幂等迁移，无需手动改库。
+- **导入接口**：`POST /api/sessions/{id}/roster`（multipart：`file` + `match_field`）。
+  - 支持 **CSV（UTF-8 BOM，Excel 直接可开）和 .xlsx** 两种格式。
+  - 名单表头按 `label` 或 `name` 映射到会话字段；匹配不上的列（如备注）也原样保留。
+  - **替换式写入**：同一会话重复导入会清空旧名单。
+  - 校验：匹配列必须在名单表头里能找到对应列，否则 `400`。
+- **校对接口**：`GET /api/sessions/{id}/reconcile` 产出三类：
+  - `present`（已到）：名单内且已签到；
+  - `absent`（未到）：名单内但未签到；
+  - `extra`（名单外）：签到了但不在名单（含未填写匹配字段的签到）。
+  - 匹配规则：`roster.field_data[match_field]` 与 `signins.field_data[match_field]` 按去空白后的字符串相等判定。
+  - 未导入名单就调用 → `400`。
+- **导出**：`GET /api/sessions/{id}/reconcile/export` 导出带「校对状态」列（已到 / 未到 / 名单外）的 CSV。
+- **前端**：会话详情页新增「名单导入与签到校对」卡片——下载模板、选文件 + 选匹配列、导入名单、生成校对报告（三类带计数表格）、导出校对 CSV。
+- **权限**：名单 / 校对接口同样走 `_owned_session`，普通 admin 只能操作自己会话，越权 `404`。
+
 ### 8.4 常见部署坑（踩过即记，下次直接查表）
 
 #### 坑 1：本地 8000 端口被旧 uvicorn 占用（改了代码但新接口一直 404）

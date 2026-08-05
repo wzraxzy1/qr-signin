@@ -25,7 +25,7 @@ def _reset_tables(app):
     """每个测试前清空所有业务表并重新播种管理员，保证用例互相隔离。"""
     conn = app_module.get_db()
     cur = conn.cursor()
-    for t in ("signins", "qr_tokens", "sessions", "users"):
+    for t in ("signins", "qr_tokens", "sessions", "users", "roster"):
         cur.execute(f"DELETE FROM {t}")
     conn.commit()
     conn.close()

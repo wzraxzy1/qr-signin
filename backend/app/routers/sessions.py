@@ -10,7 +10,7 @@ import time
 import urllib.parse
 from datetime import datetime
 
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
 from ..auth_utils import get_current_user, get_current_token, mask_id_card
@@ -18,6 +18,45 @@ from ..db import get_db
 from ..schemas import SessionCreate, SessionUpdate
 
 router = APIRouter()
+
+
+def _parse_roster_bytes(content: bytes, filename: str):
+    """解析名单文件（CSV 或 XLSX），返回 (headers, rows)。
+
+    headers: 首行去空白后的字符串列表
+    rows:    后续每行的单元格列表（字符串；空单元格为 ""）
+    """
+    lower = (filename or "").lower()
+    if lower.endswith(".xlsx"):
+        try:
+            import openpyxl
+        except ImportError:
+            raise HTTPException(status_code=500, detail="服务器未安装 openpyxl，无法解析 xlsx")
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        if ws is None:
+            return [], []
+        grid = [list(r) for r in ws.iter_rows(values_only=True)]
+        if not grid:
+            return [], []
+        headers = [str(h).strip() if h is not None else "" for h in grid[0]]
+        rows = []
+        for raw in grid[1:]:
+            cells = [str(c).strip() if c is not None else "" for c in raw]
+            # 补齐到与表头等长，避免列错位
+            if len(cells) < len(headers):
+                cells = cells + [""] * (len(headers) - len(cells))
+            rows.append(cells)
+        return headers, rows
+    else:
+        # 默认按 CSV 处理（兼容 .csv / .txt）
+        text = content.decode("utf-8-sig", errors="replace")
+        reader = list(csv.reader(io.StringIO(text)))
+        if not reader:
+            return [], []
+        headers = [h.strip() for h in reader[0]]
+        rows = [["" if c is None else str(c).strip() for c in r] for r in reader[1:]]
+        return headers, rows
 
 
 def _owned_session(cur, session_id: str, user: dict):
@@ -314,6 +353,272 @@ async def export_records(session_id: str, user: dict = Depends(get_current_user)
             "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
         }
     )
+@router.post("/api/sessions/{session_id}/roster")
+async def import_roster(
+    session_id: str,
+    file: UploadFile = File(...),
+    match_field: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    """导入名单（CSV / XLSX）。
+
+    - match_field：管理员手动指定的匹配列，必须是本会话某个字段的 name
+      （如 "employee_id"/"id_card"/"student_number"/"phone"/"name"）。
+    - 名单表头（首行）按 label 或 name 映射到会话字段；匹配不上的列也保留（key 用原表头）。
+    - 替换式写入：同一会话重复导入会清空旧名单。
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    row = _owned_session(cur, session_id, user)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    fields_config = json.loads(row["fields_config"])
+    field_names = {f["name"] for f in fields_config}
+
+    content = await file.read()
+    headers, rows = _parse_roster_bytes(content, file.filename)
+    if not headers:
+        conn.close()
+        raise HTTPException(status_code=400, detail="名单文件为空或无法解析（需包含表头行）")
+
+    # 表头 -> 会话字段 name（能映射才用 name，否则保留原表头字符串）
+    label_to_name = {f["label"]: f["name"] for f in fields_config if f.get("label")}
+    header_map = {}
+    for h in headers:
+        if h in field_names:
+            header_map[h] = h
+        elif h in label_to_name:
+            header_map[h] = label_to_name[h]
+        else:
+            header_map[h] = h  # 保留原表头（如备注列）
+
+    # 校验匹配列在名单中能找到对应表头
+    match_header = None
+    for h, name in header_map.items():
+        if name == match_field:
+            match_header = h
+            break
+    if match_header is None:
+        conn.close()
+        raise HTTPException(
+            status_code=400,
+            detail=f"匹配列「{match_field}」在名单中找不到对应表头，请检查名单表头或重新选择匹配列",
+        )
+    if match_field not in field_names:
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"匹配列「{match_field}」不是本会话的字段")
+
+    # 替换式写入
+    cur.execute("DELETE FROM roster WHERE session_id = ?", (session_id,))
+    seq = 0
+    for r in rows:
+        field_data = {}
+        for idx, h in enumerate(headers):
+            key = header_map[h]
+            cell = r[idx] if idx < len(r) else ""
+            field_data[key] = cell
+        cur.execute(
+            "INSERT INTO roster (session_id, seq, field_data) VALUES (?, ?, ?)",
+            (session_id, seq, json.dumps(field_data, ensure_ascii=False)),
+        )
+        seq += 1
+    cur.execute(
+        "UPDATE sessions SET roster_match_field = ? WHERE id = ?",
+        (match_field, session_id),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "status": "imported",
+        "count": seq,
+        "match_field": match_field,
+        "match_header": match_header,
+    }
+
+
+@router.get("/api/sessions/{session_id}/roster")
+async def get_roster(session_id: str, user: dict = Depends(get_current_user)):
+    """获取已导入的名单概览（条数 + 匹配列）。"""
+    conn = get_db()
+    cur = conn.cursor()
+    row = _owned_session(cur, session_id, user)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    cur.execute("SELECT COUNT(*) AS cnt FROM roster WHERE session_id = ?", (session_id,))
+    cnt = cur.fetchone()["cnt"]
+    conn.close()
+    return {
+        "count": cnt,
+        "match_field": row["roster_match_field"],
+        "imported": cnt > 0,
+    }
+
+
+@router.get("/api/sessions/{session_id}/reconcile")
+async def reconcile(session_id: str, user: dict = Depends(get_current_user)):
+    """签到后校对：对比名单与签到记录，产出 已到 / 未到 / 名单外 三类。
+
+    - 已到：名单内且已签到（按 roster_match_field 匹配）
+    - 未到：名单内但未签到
+    - 名单外：签到了但不在名单（含未填写匹配字段的签到）
+    """
+    conn = get_db()
+    cur = conn.cursor()
+    row = _owned_session(cur, session_id, user)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    match_field = row["roster_match_field"]
+    if not match_field:
+        conn.close()
+        raise HTTPException(status_code=400, detail="尚未导入名单或未指定匹配列，无法校对")
+
+    fields_config = json.loads(row["fields_config"])
+    match_label = next((f["label"] for f in fields_config if f["name"] == match_field), match_field)
+
+    # 名单
+    cur.execute("SELECT field_data FROM roster WHERE session_id = ? ORDER BY seq ASC", (session_id,))
+    roster_rows = [json.loads(r["field_data"]) for r in cur.fetchall()]
+    roster_keys = {}  # norm match value -> roster field_data
+    for rd in roster_rows:
+        v = str(rd.get(match_field, "")).strip()
+        if v:
+            roster_keys.setdefault(v, rd)
+
+    # 签到
+    cur.execute("SELECT field_data, sign_in_time FROM signins WHERE session_id = ? ORDER BY sign_in_time ASC", (session_id,))
+    signin_rows = cur.fetchall()
+    signin_by_key = {}  # norm match value -> signin record
+    for sr in signin_rows:
+        sd = json.loads(sr["field_data"])
+        v = str(sd.get(match_field, "")).strip()
+        signin_by_key.setdefault(v, (sd, sr["sign_in_time"]))
+
+    # 已到 / 未到
+    present, absent = [], []
+    for rd in roster_rows:
+        v = str(rd.get(match_field, "")).strip()
+        if v and v in signin_by_key:
+            sd, t = signin_by_key[v]
+            rec = dict(rd)
+            rec["_sign_in_time"] = t
+            rec["_time_str"] = datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+            present.append(rec)
+        else:
+            absent.append(dict(rd))
+
+    # 名单外：所有签到中匹配值不在名单集合内的（含空值）
+    extra = []
+    for sr in signin_rows:
+        sd = json.loads(sr["field_data"])
+        v = str(sd.get(match_field, "")).strip()
+        if v not in roster_keys:
+            rec = dict(sd)
+            rec["_sign_in_time"] = sr["sign_in_time"]
+            rec["_time_str"] = datetime.fromtimestamp(sr["sign_in_time"]).strftime("%Y-%m-%d %H:%M:%S")
+            extra.append(rec)
+
+    conn.close()
+    return {
+        "match_field": match_field,
+        "match_field_label": match_label,
+        "roster_total": len(roster_rows),
+        "signin_total": len(signin_rows),
+        "present": present,
+        "absent": absent,
+        "extra": extra,
+        "counts": {
+            "present": len(present),
+            "absent": len(absent),
+            "extra": len(extra),
+        },
+    }
+
+
+@router.get("/api/sessions/{session_id}/reconcile/export")
+async def export_reconcile(session_id: str, user: dict = Depends(get_current_user)):
+    """导出校对结果为 CSV（带「校对状态」列：已到 / 未到 / 名单外）。"""
+    conn = get_db()
+    cur = conn.cursor()
+    row = _owned_session(cur, session_id, user)
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Session not found")
+    match_field = row["roster_match_field"]
+    if not match_field:
+        conn.close()
+        raise HTTPException(status_code=400, detail="尚未导入名单或未指定匹配列，无法导出")
+
+    fields_config = json.loads(row["fields_config"])
+    match_label = next((f["label"] for f in fields_config if f["name"] == match_field), match_field)
+    labels = [f["label"] for f in fields_config if f["name"] != match_field]
+    label_of = {f["name"]: f["label"] for f in fields_config}
+
+    # 复用 reconcile 的计算逻辑
+    cur.execute("SELECT field_data FROM roster WHERE session_id = ? ORDER BY seq ASC", (session_id,))
+    roster_rows = [json.loads(r["field_data"]) for r in cur.fetchall()]
+    roster_keys = {}
+    for rd in roster_rows:
+        v = str(rd.get(match_field, "")).strip()
+        if v:
+            roster_keys.setdefault(v, rd)
+    cur.execute("SELECT field_data, sign_in_time FROM signins WHERE session_id = ? ORDER BY sign_in_time ASC", (session_id,))
+    signin_rows = cur.fetchall()
+    signin_by_key = {}
+    for sr in signin_rows:
+        sd = json.loads(sr["field_data"])
+        v = str(sd.get(match_field, "")).strip()
+        signin_by_key.setdefault(v, (sd, sr["sign_in_time"]))
+
+    output = io.StringIO()
+    output.write("\ufeff")
+    writer = csv.writer(output)
+    writer.writerow(["校对状态", match_label] + labels + ["签到时间"])
+
+    def _emit(status, data, sign_in_time=None):
+        row_vals = [status, str(data.get(match_field, "")).strip()]
+        for f in fields_config:
+            if f["name"] == match_field:
+                continue
+            val = data.get(f["name"], "")
+            if f["name"] == "id_card":
+                val = mask_id_card(val)
+            row_vals.append(val)
+        row_vals.append(
+            datetime.fromtimestamp(sign_in_time).strftime("%Y-%m-%d %H:%M:%S") if sign_in_time else ""
+        )
+        writer.writerow(row_vals)
+
+    for rd in roster_rows:
+        v = str(rd.get(match_field, "")).strip()
+        if v and v in signin_by_key:
+            sd, t = signin_by_key[v]
+            _emit("已到", sd, t)
+        else:
+            _emit("未到", rd)
+    for sr in signin_rows:
+        sd = json.loads(sr["field_data"])
+        v = str(sd.get(match_field, "")).strip()
+        if v not in roster_keys:
+            _emit("名单外", sd, sr["sign_in_time"])
+
+    conn.close()
+    output.seek(0)
+    raw_name = f"reconcile_{row['name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    ascii_name = f"reconcile_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    encoded_name = urllib.parse.quote(raw_name)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
+        }
+    )
+
+
 @router.get("/api/sessions/{session_id}/stats")
 async def get_session_stats(session_id: str, user: dict = Depends(get_current_user)):
     """查看单个会话的签到概况（需登录）"""
