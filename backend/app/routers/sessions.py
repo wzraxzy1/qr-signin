@@ -80,8 +80,8 @@ async def create_session(session: SessionCreate, user: dict = Depends(get_curren
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, start_at, expires_at, max_signins, created_by)
-           VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
+        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, start_at, expires_at, max_signins, created_by, anti_photo)
+           VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)""",
         (
             session_id,
             session.name,
@@ -92,6 +92,7 @@ async def create_session(session: SessionCreate, user: dict = Depends(get_curren
             session.expires_at,
             session.max_signins,
             user["uid"],
+            1 if session.anti_photo else 0,
         ),
     )
     conn.commit()
@@ -130,6 +131,7 @@ async def list_sessions(user: dict = Depends(get_current_user)):
             "max_signins": row["max_signins"],
             "created_by": row["created_by"],
             "created_by_username": row["creator_username"],
+            "anti_photo": bool(row["anti_photo"]),
         })
     conn.close()
     return {"sessions": sessions}
@@ -162,6 +164,7 @@ async def get_session(session_id: str, user: dict = Depends(get_current_user)):
         "created_by": row["created_by"],
         "created_by_username": creator["username"] if creator else None,
         "sign_in_count": count,
+        "anti_photo": bool(row["anti_photo"]),
     }
 
 
@@ -197,6 +200,9 @@ async def update_session(session_id: str, update: SessionUpdate, user: dict = De
     if update.max_signins is not None:
         updates.append("max_signins = ?")
         params.append(update.max_signins)
+    if update.anti_photo is not None:
+        updates.append("anti_photo = ?")
+        params.append(1 if update.anti_photo else 0)
 
     if updates:
         params.append(session_id)
@@ -231,16 +237,20 @@ async def get_qr_info(session_id: str, request: Request, user: dict = Depends(ge
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Session not found")
+    anti_photo = bool(row["anti_photo"])
     conn.close()
     token_info = get_current_token(session_id)
     # Build the sign-in URL
     base_url = str(request.base_url).rstrip("/")
     signin_url = f"{base_url}/#/signin?session={session_id}&token={token_info['token']}"
+    validity = token_info["interval"] + (5 if anti_photo else 120)
     return {
         "url": signin_url,
         "token": token_info["token"],
         "expires_in": token_info["expires_in"],
         "interval": token_info["interval"],
+        "anti_photo": anti_photo,
+        "validity_seconds": validity,
     }
 
 

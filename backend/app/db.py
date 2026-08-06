@@ -108,6 +108,12 @@ def init_db():
         cur.execute("ALTER TABLE sessions ADD COLUMN roster_match_field TEXT")
     except Exception:
         pass  # column already exists
+    # Migration: add anti_photo flag to enable short-lived (anti-photo) QR mode
+    # (开放/无名单会话也可防拍照：二维码仅比刷新间隔多活几秒，拍照转发即过期)
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN anti_photo INTEGER")
+    except Exception:
+        pass  # column already exists
     # Migration: add device_id column for anti-cheat (one device signs at most once per session)
     try:
         cur.execute("ALTER TABLE signins ADD COLUMN device_id TEXT")

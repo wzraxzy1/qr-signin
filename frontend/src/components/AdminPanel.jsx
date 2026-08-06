@@ -73,6 +73,7 @@ export default function AdminPanel() {
     start_at: '',
     expires_at: '',
     max_signins: '',
+    anti_photo: false,
   })
 
   const showToast = (msg, type = '') => {
@@ -154,10 +155,11 @@ export default function AdminPanel() {
         start_at: startAt,
         expires_at: expiresAt,
         max_signins: isNaN(maxVal) ? null : maxVal,
+        anti_photo: form.anti_photo,
       })
       showToast('创建成功', 'success')
       setShowCreate(false)
-      setForm({ name: '', refresh_interval: 10, fields: [...defaultFields], start_at: '', expires_at: '', max_signins: '' })
+      setForm({ name: '', refresh_interval: 10, fields: [...defaultFields], start_at: '', expires_at: '', max_signins: '', anti_photo: false })
       fetchSessions()
     } catch (err) {
       showToast('创建失败', 'error')
@@ -291,6 +293,20 @@ export default function AdminPanel() {
               />
               <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
                 留空表示不限制；填写正整数后，签到达到该人数将自动拒绝新签到
+              </p>
+            </div>
+
+            <div className="form-group">
+              <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.anti_photo}
+                  onChange={(e) => setForm({ ...form, anti_photo: e.target.checked })}
+                />
+                <span>🛡️ 防拍照（动态短时效二维码）</span>
+              </label>
+              <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
+                开启后二维码仅比刷新间隔多活几秒，拍照留存或转发给他人会迅速过期、无法签到；现场扫描屏幕上的活码不受影响。不需要导入名单也能防拍照。
               </p>
             </div>
 
@@ -436,6 +452,7 @@ function SessionDetail({ session, onBack, showToast }) {
   const [endInput, setEndInput] = useState(epochToLocalInput(session.expires_at))
   const [maxInput, setMaxInput] = useState(session.max_signins != null ? String(session.max_signins) : '')
   const [savingTime, setSavingTime] = useState(false)
+  const [antiPhoto, setAntiPhoto] = useState(!!session.anti_photo)
 
   // 仅超级管理员能看到创建者
   const me = getUser()
@@ -459,6 +476,7 @@ function SessionDetail({ session, onBack, showToast }) {
         start_at: sa,
         expires_at: ea,
         max_signins: maxVal,
+        anti_photo: antiPhoto,
       })
       showToast('时间设置已保存', 'success')
       onBack()
@@ -637,6 +655,9 @@ function SessionDetail({ session, onBack, showToast }) {
       <div className="card">
         <div className="card-title">
           <span>{session.name} - 签到记录</span>
+          {session.anti_photo && (
+            <span className="badge badge-active" style={{ marginLeft: 8 }}>🛡️ 防拍照</span>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               className="btn btn-success btn-sm"
@@ -717,6 +738,19 @@ function SessionDetail({ session, onBack, showToast }) {
                 onChange={(e) => setMaxInput(e.target.value)}
                 style={{ maxWidth: 200 }}
               />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={antiPhoto}
+                  onChange={(e) => setAntiPhoto(e.target.checked)}
+                />
+                <span>🛡️ 防拍照（动态短时效二维码）</span>
+              </label>
+              <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
+                开启后二维码仅比刷新间隔多活几秒，拍照留存/转发会迅速过期无法签到；现场扫活码不受影响。
+              </p>
             </div>
             <button className="btn btn-primary btn-sm" onClick={handleSaveTime} disabled={savingTime}>
               {savingTime ? '保存中...' : '保存设置'}

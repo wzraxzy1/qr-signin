@@ -414,3 +414,32 @@ def test_shared_qr_still_works_for_roster_session(client):
     t = _seed_token(sid)  # 共享码
     r = _submit(client, sid, t, {"name": "王五", "employee_id": "1001"}, device_id="DX")
     assert r.status_code == 200, r.text
+
+
+def test_anti_photo_short_validity_rejects_stale_qr(client):
+    """防拍照（动态短时效）模式：二维码仅比刷新间隔多活几秒。
+    25 秒前的旧码（超过 10+5=15s 有效期）应被拒「二维码已过期」；新鲜码(0s)仍可签。"""
+    token = _login(client)
+    sid = _create_session(client, token, anti_photo=True, refresh_interval=10)
+    # 25 秒前的旧码：超过短时效(15s) -> 403
+    t_old = _seed_token(sid, token_value="OLD", age=25)
+    r_old = _submit(client, sid, t_old, {"name": "张三", "phone": "1"})
+    assert r_old.status_code == 403, r_old.text
+    assert "过期" in r_old.json()["detail"]
+    # 新鲜码(0s)：在场活码 -> 200
+    t_fresh = _seed_token(sid, token_value="NEW", age=0)
+    r_fresh = _submit(client, sid, t_fresh, {"name": "张三", "phone": "1"})
+    assert r_fresh.status_code == 200, r_fresh.text
+
+
+def test_anti_photo_off_keeps_long_validity(client):
+    """未开启防拍照：沿用 120s 宽限。25 秒前的旧码(在 130s 内)仍可签；200 秒前(超 130s)才拒。"""
+    token = _login(client)
+    sid = _create_session(client, token, refresh_interval=10)  # anti_photo 默认 False
+    # 25s 旧码在 130s 宽限内 -> 200
+    t_recent = _seed_token(sid, token_value="REC", age=25)
+    assert _submit(client, sid, t_recent, {"name": "张三", "phone": "1"}).status_code == 200
+    # 200s 旧码超出 130s -> 403
+    t_stale = _seed_token(sid, token_value="STL", age=200)
+    r_stale = _submit(client, sid, t_stale, {"name": "李四", "phone": "2"})
+    assert r_stale.status_code == 403

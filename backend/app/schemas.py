@@ -13,6 +13,7 @@ class SessionCreate(BaseModel):
     start_at: Optional[float] = None
     expires_at: Optional[float] = None
     max_signins: Optional[int] = None
+    anti_photo: bool = False
 
 
 class SessionUpdate(BaseModel):
@@ -23,6 +24,7 @@ class SessionUpdate(BaseModel):
     start_at: Optional[float] = None
     expires_at: Optional[float] = None
     max_signins: Optional[int] = None
+    anti_photo: Optional[bool] = None
 
 
 class SignInSubmit(BaseModel):

@@ -44,6 +44,10 @@ if not os.path.isdir(FRONTEND_DIST):
 # Token grace period: users get this many seconds after QR generation to submit
 TOKEN_GRACE_PERIOD = 120  # 2 minutes
 
+# 防拍照（动态短时效二维码）模式下的宽限：启用后二维码仅比刷新间隔多活几秒，
+# 拍照留存/转发会在极短时间内过期，现场活码扫描不受影响。
+ANTI_PHOTO_GRACE_PERIOD = 5
+
 # ==================== Login Rate Limiting 常量 ====================
 # 简单内存级登录限流：单实例部署足够；多实例需改为共享存储（如 Redis）。
 # 按「用户名」+「来源 IP」双维度计数，防止暴力破解与批量探测。
