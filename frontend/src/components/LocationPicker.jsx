@@ -171,19 +171,24 @@ export default function LocationPicker({ center, radius, onChange }) {
 
   return (
     <div className="location-picker">
-      {mapReady ? (
+      {/* 地图容器必须始终存在于 DOM（初始化时 mapReady 还是 false，
+          若条件渲染则 ref 为 null，new TMap.Map(null) 会让地图永远出不来）。
+          加载中/报错以浮层覆盖在地图上方。 */}
+      <div className="location-map-box">
         <div className="location-map" ref={mapElRef} />
-      ) : mapError ? (
-        <div className="location-map-fallback">
-          ⚠️ 地图无法加载：{mapDetail || '未配置地图 Key'}。
-          <br />
-          若已配置 key 仍失败，请检查：① 腾讯位置服务控制台该 key 是否启用「JavaScript API GL」；②「域名白名单」是否包含你的部署域名（测试阶段可留空）；③ key 是否复制完整、无多余空格。
-          <br />
-          临时可用下方手动输入（坐标请填 <b>GCJ-02</b>，可用腾讯地图坐标拾取器获取）。
-        </div>
-      ) : (
-        <div className="location-map-fallback">地图加载中...</div>
-      )}
+        {!mapReady && !mapError && (
+          <div className="location-map-overlay">地图加载中...</div>
+        )}
+        {mapError && (
+          <div className="location-map-overlay">
+            ⚠️ 地图无法加载：{mapDetail || '未配置地图 Key'}。
+            <br />
+            若已配置 key 仍失败，请检查：① 腾讯位置服务控制台该 key 是否启用「JavaScript API GL」；②「域名白名单」是否包含你的部署域名（测试阶段可留空）；③ key 是否复制完整、无多余空格。
+            <br />
+            临时可用下方手动输入（坐标请填 <b>GCJ-02</b>，可用腾讯地图坐标拾取器获取）。
+          </div>
+        )}
+      </div>
 
       <div className="location-fields">
         <div className="location-row">
