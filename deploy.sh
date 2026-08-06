@@ -61,6 +61,19 @@ ok "后端依赖就绪"
 echo ""
 echo ">>> [3/5] 构建前端"
 cd "$FRONTEND_DIR"
+
+# 腾讯地图 key 注入（构建期环境变量 VITE_TMAP_KEY）
+# 地图点选功能依赖它；未提供则前端自动降级为手动填经纬度（GCJ-02）。
+# 用法：VITE_TMAP_KEY="你的key" bash deploy.sh
+if [ -n "${VITE_TMAP_KEY:-}" ]; then
+  printf 'VITE_TMAP_KEY=%s\n' "$VITE_TMAP_KEY" > "$FRONTEND_DIR/.env"
+  ok "已写入腾讯地图 key 到 frontend/.env（首4位: ${VITE_TMAP_KEY:0:4}***，已 gitignore 不会提交）"
+elif [ -f "$FRONTEND_DIR/.env" ] && grep -q '^VITE_TMAP_KEY=' "$FRONTEND_DIR/.env"; then
+  ok "沿用 frontend/.env 中已有的腾讯地图 key"
+else
+  warn "未提供 VITE_TMAP_KEY：前端将降级为「手动填 GCJ-02 经纬度」，无地图点选。如需地图点选，运行：VITE_TMAP_KEY=你的key bash deploy.sh"
+fi
+
 npm install
 npm run build
 ok "前端构建完成"
@@ -149,6 +162,15 @@ if systemctl is-active --quiet qr-signin; then
   ok "⑤ systemctl: active (running)"
 else
   bad "⑤ systemctl: 非 active，请执行 journalctl -u qr-signin -n 50 排查"
+fi
+
+# 件6：腾讯地图 key（决定能否地图点选，还是降级手动填经纬度）
+if [ -f "$FRONTEND_DIR/.env" ] && grep -q '^VITE_TMAP_KEY=' "$FRONTEND_DIR/.env"; then
+  MAP_VAL=$(grep '^VITE_TMAP_KEY=' "$FRONTEND_DIR/.env" | head -1 | cut -d= -f2-)
+  MAP_MASK="${MAP_VAL:0:4}***（共 ${#MAP_VAL} 位）"
+  ok "⑥ 腾讯地图 key: 已配置（${MAP_MASK}）→ 管理后台可用地图点选+拖拽半径"
+else
+  warn "⑥ 腾讯地图 key: 未配置 → 仅手动填 GCJ-02 经纬度；要地图点选请 VITE_TMAP_KEY=你的key bash deploy.sh"
 fi
 
 echo "--------------------------------------------------"

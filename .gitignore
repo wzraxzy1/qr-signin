@@ -10,6 +10,7 @@ __pycache__/
 node_modules/
 dist/
 .env
+.env.*
 .venv/
 venv/
 *.log
