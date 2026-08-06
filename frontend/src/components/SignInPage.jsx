@@ -127,6 +127,29 @@ export default function SignInPage() {
       .catch(() => fetchSession())  // 接口异常则退回普通表单流程
   }, [sessionId, token, fetchSession, signedKey, bypassWeChat])
 
+  // 禁止在微信内一键转发/分享签到链接：隐藏微信右上角"···"菜单（含转发、分享入口）。
+  // 仅对微信内置浏览器生效；非微信环境 WeixinJSBridge 不存在，调用为 no-op，安全无副作用。
+  // 注意：这是"软拦截"——去掉便捷转发按钮，但无法阻止长按复制链接或截图转发；
+  // 配合「防拍照」的短时效 token，已能把随意转发挡掉大半。
+  useEffect(() => {
+    const hideWXMenu = () => {
+      const bridge = window.WeixinJSBridge
+      if (bridge && typeof bridge.call === 'function') {
+        bridge.call('hideOptionMenu')
+      } else {
+        document.addEventListener(
+          'WeixinJSBridgeReady',
+          () => {
+            const b = window.WeixinJSBridge
+            if (b && typeof b.call === 'function') b.call('hideOptionMenu')
+          },
+          false
+        )
+      }
+    }
+    hideWXMenu()
+  }, [])
+
   // 未开始时定时轮询，到达开始时间后自动开放表单
   useEffect(() => {
     if (windowMsg && windowMsg.includes('尚未开始')) {
