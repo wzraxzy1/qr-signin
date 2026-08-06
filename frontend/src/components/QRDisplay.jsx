@@ -180,7 +180,7 @@ export default function QRDisplay() {
 
         {qrData.anti_photo && (
           <div className="qr-antiphoto-hint">
-            🛡️ 防拍照模式：二维码仅约 <strong>{qrData.validity_seconds}</strong> 秒内有效，拍照留存或转发给他人会迅速过期、无法签到。请现场扫描屏幕上当前显示的活码。
+            🛡️ 防拍照模式：二维码约 <strong>{qrData.validity_seconds}</strong> 秒内有效（已按字段数量自动延长填写时间），拍照留存或转发给他人会迅速过期、无法签到。请现场扫描屏幕上当前显示的活码。
           </div>
         )}
 

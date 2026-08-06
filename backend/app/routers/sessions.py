@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 
 from ..auth_utils import get_current_user, get_current_token, mask_id_card
+from ..config import TOKEN_GRACE_PERIOD, anti_photo_grace_seconds
 from ..db import get_db
 from ..schemas import SessionCreate, SessionUpdate
 
@@ -238,12 +239,14 @@ async def get_qr_info(session_id: str, request: Request, user: dict = Depends(ge
         conn.close()
         raise HTTPException(status_code=404, detail="Session not found")
     anti_photo = bool(row["anti_photo"])
+    fields_config = row["fields_config"]
     conn.close()
     token_info = get_current_token(session_id)
     # Build the sign-in URL
     base_url = str(request.base_url).rstrip("/")
     signin_url = f"{base_url}/#/signin?session={session_id}&token={token_info['token']}"
-    validity = token_info["interval"] + (5 if anti_photo else 120)
+    extra = anti_photo_grace_seconds(fields_config) if anti_photo else TOKEN_GRACE_PERIOD
+    validity = token_info["interval"] + extra
     return {
         "url": signin_url,
         "token": token_info["token"],

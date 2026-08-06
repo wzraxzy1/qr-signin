@@ -416,20 +416,24 @@ def test_shared_qr_still_works_for_roster_session(client):
     assert r.status_code == 200, r.text
 
 
-def test_anti_photo_short_validity_rejects_stale_qr(client):
-    """防拍照（动态短时效）模式：二维码仅比刷新间隔多活几秒。
-    25 秒前的旧码（超过 10+5=15s 有效期）应被拒「二维码已过期」；新鲜码(0s)仍可签。"""
+def test_anti_photo_validity_scales_with_field_count(client):
+    """防拍照有效期随字段数量灵活延长：字段越多给的填写时间越长；超期则拒。
+    3 字段：validity = 10 + (5 + 10*3) = 45s；0 字段：validity = 10 + (5 + 0) = 15s。"""
     token = _login(client)
-    sid = _create_session(client, token, anti_photo=True, refresh_interval=10)
-    # 25 秒前的旧码：超过短时效(15s) -> 403
-    t_old = _seed_token(sid, token_value="OLD", age=25)
-    r_old = _submit(client, sid, t_old, {"name": "张三", "phone": "1"})
-    assert r_old.status_code == 403, r_old.text
-    assert "过期" in r_old.json()["detail"]
-    # 新鲜码(0s)：在场活码 -> 200
-    t_fresh = _seed_token(sid, token_value="NEW", age=0)
-    r_fresh = _submit(client, sid, t_fresh, {"name": "张三", "phone": "1"})
-    assert r_fresh.status_code == 200, r_fresh.text
+    # 默认 3 字段会话：45s 有效期
+    sid3 = _create_session(client, token, anti_photo=True, refresh_interval=10)
+    t3_old = _seed_token(sid3, token_value="O3", age=60)  # > 45s -> 403
+    r3_old = _submit(client, sid3, t3_old, {"name": "张三", "phone": "1"})
+    assert r3_old.status_code == 403, r3_old.text
+    assert "过期" in r3_old.json()["detail"]
+    t3_new = _seed_token(sid3, token_value="N3", age=0)   # 活码 -> 200
+    assert _submit(client, sid3, t3_new, {"name": "张三", "phone": "1"}).status_code == 200
+    # 0 字段（匿名）会话：仅 15s 有效期，明显短于 3 字段——证明按字段数缩放
+    sid0 = _create_session(client, token, anti_photo=True, refresh_interval=10, fields_config=[])
+    t0_old = _seed_token(sid0, token_value="O0", age=25)  # > 15s -> 403
+    assert _submit(client, sid0, t0_old, {}).status_code == 403
+    t0_new = _seed_token(sid0, token_value="N0", age=0)   # 活码 -> 200
+    assert _submit(client, sid0, t0_new, {}).status_code == 200
 
 
 def test_anti_photo_off_keeps_long_validity(client):

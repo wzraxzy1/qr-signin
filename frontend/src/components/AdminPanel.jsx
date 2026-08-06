@@ -306,7 +306,7 @@ export default function AdminPanel() {
                 <span>🛡️ 防拍照（动态短时效二维码）</span>
               </label>
               <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
-                开启后二维码仅比刷新间隔多活几秒，拍照留存或转发给他人会迅速过期、无法签到；现场扫描屏幕上的活码不受影响。不需要导入名单也能防拍照。
+                开启后二维码有效期按字段数量自动延长（每个字段约 10 秒填写时间），字段多的表单也有足够时间填写；拍照留存或转发给他人会迅速过期、无法签到。现场扫描屏幕上的活码不受影响。不需要导入名单也能防拍照。
               </p>
             </div>
 
@@ -749,7 +749,7 @@ function SessionDetail({ session, onBack, showToast }) {
                 <span>🛡️ 防拍照（动态短时效二维码）</span>
               </label>
               <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
-                开启后二维码仅比刷新间隔多活几秒，拍照留存/转发会迅速过期无法签到；现场扫活码不受影响。
+                开启后二维码有效期按字段数量自动延长（每个字段约 10 秒填写时间），拍照留存/转发仍会迅速过期无法签到；现场扫活码不受影响。
               </p>
             </div>
             <button className="btn btn-primary btn-sm" onClick={handleSaveTime} disabled={savingTime}>

@@ -5,6 +5,7 @@
 拆分自原单体 app.py，便于测试与复用，任何模块都从这里取配置。
 """
 import os
+import json
 import secrets
 
 # SECRET_KEY：生产环境（APP_ENV=production）必须显式设置，缺失则拒绝启动，
@@ -44,9 +45,20 @@ if not os.path.isdir(FRONTEND_DIST):
 # Token grace period: users get this many seconds after QR generation to submit
 TOKEN_GRACE_PERIOD = 120  # 2 minutes
 
-# 防拍照（动态短时效二维码）模式下的宽限：启用后二维码仅比刷新间隔多活几秒，
-# 拍照留存/转发会在极短时间内过期，现场活码扫描不受影响。
-ANTI_PHOTO_GRACE_PERIOD = 5
+# 防拍照（动态短时效二维码）模式下的宽限：按字段数量灵活延长，避免字段多的表单
+# 来不及填写。有效期 = refresh_interval + 基础宽限 + 每字段额外时间。拍照留存/转发
+# 仍会在远短于 130s 的时间内过期，现场活码扫描不受影响。
+ANTI_PHOTO_BASE_GRACE = 5        # 基础宽限（无字段/匿名场景）
+ANTI_PHOTO_PER_FIELD = 10       # 每个签到字段额外给的填写时间（秒）
+
+
+def anti_photo_grace_seconds(fields_config):
+    """防拍照模式的额外宽限秒数：基础 + 每字段时间。字段越多给的填写时间越长。"""
+    try:
+        n = len(json.loads(fields_config or "[]"))
+    except Exception:
+        n = 0
+    return ANTI_PHOTO_BASE_GRACE + ANTI_PHOTO_PER_FIELD * n
 
 # ==================== Login Rate Limiting 常量 ====================
 # 简单内存级登录限流：单实例部署足够；多实例需改为共享存储（如 Redis）。

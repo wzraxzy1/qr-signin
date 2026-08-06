@@ -18,7 +18,7 @@ import json
 
 from fastapi import APIRouter, Request, HTTPException
 
-from ..config import TOKEN_GRACE_PERIOD, ANTI_PHOTO_GRACE_PERIOD
+from ..config import TOKEN_GRACE_PERIOD, anti_photo_grace_seconds
 from ..db import get_db
 from ..schemas import SignInSubmit
 
@@ -240,9 +240,10 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
     else:
         # —— 原逻辑：qr_tokens 共享码 ——
         interval = row["refresh_interval"]
-        # 防拍照模式：二维码仅比刷新间隔多活几秒，拍照留存/转发会迅速过期；
-        # 现场活码扫描始终在有效期内，不受影响。默认关闭（沿用 120s 宽限）。
-        grace = ANTI_PHOTO_GRACE_PERIOD if row["anti_photo"] else TOKEN_GRACE_PERIOD
+        # 防拍照模式：二维码有效期按字段数量灵活延长（基础+每字段时间），
+        # 字段多的表单也有足够填写时间；拍照留存/转发仍会在远短于 130s 内过期。
+        # 默认关闭（沿用 120s 宽限）。
+        grace = anti_photo_grace_seconds(row["fields_config"]) if row["anti_photo"] else TOKEN_GRACE_PERIOD
         token_validity = interval + grace
         cur.execute(
             "SELECT * FROM qr_tokens WHERE session_id = ? AND token = ? ORDER BY created_at DESC LIMIT 1",
