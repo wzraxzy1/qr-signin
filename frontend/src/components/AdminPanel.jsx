@@ -3,6 +3,7 @@ import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
 import { getUser } from '../auth'
+import LocationPicker from './LocationPicker'
 
 const API = '/api'
 
@@ -74,6 +75,11 @@ export default function AdminPanel() {
     expires_at: '',
     max_signins: '',
     anti_photo: false,
+    location_enabled: false,
+    center_lat: null,
+    center_lng: null,
+    radius_m: null,
+    location_fallback: 'reject',
   })
 
   const showToast = (msg, type = '') => {
@@ -156,10 +162,15 @@ export default function AdminPanel() {
         expires_at: expiresAt,
         max_signins: isNaN(maxVal) ? null : maxVal,
         anti_photo: form.anti_photo,
+        location_enabled: form.location_enabled,
+        center_lat: form.location_enabled ? form.center_lat : null,
+        center_lng: form.location_enabled ? form.center_lng : null,
+        radius_m: form.location_enabled ? (parseInt(form.radius_m, 10) || null) : null,
+        location_fallback: form.location_fallback,
       })
       showToast('创建成功', 'success')
       setShowCreate(false)
-      setForm({ name: '', refresh_interval: 10, fields: [...defaultFields], start_at: '', expires_at: '', max_signins: '', anti_photo: false })
+      setForm({ name: '', refresh_interval: 10, fields: [...defaultFields], start_at: '', expires_at: '', max_signins: '', anti_photo: false, location_enabled: false, center_lat: null, center_lng: null, radius_m: null, location_fallback: 'reject' })
       fetchSessions()
     } catch (err) {
       showToast('创建失败', 'error')
@@ -311,6 +322,46 @@ export default function AdminPanel() {
             </div>
 
             <div className="form-group">
+              <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.location_enabled}
+                  onChange={(e) => setForm({ ...form, location_enabled: e.target.checked })}
+                />
+                <span>📍 定位限制（仅允许在指定范围内签到）</span>
+              </label>
+              <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
+                开启后，签到者必须位于你设定的中心点半径范围内才能签到（现场围栏，防远程/代签）。在手机上由系统获取 GPS，服务端校验，无法绕过。
+              </p>
+              {form.location_enabled && (
+                <div style={{ marginTop: 12 }}>
+                  <LocationPicker
+                    center={form.center_lat != null ? { lat: form.center_lat, lng: form.center_lng } : null}
+                    radius={form.radius_m}
+                    onChange={({ center, radius }) =>
+                      setForm({ ...form, center_lat: center.lat, center_lng: center.lng, radius_m: radius })
+                    }
+                  />
+                  <div className="form-group" style={{ marginTop: 12 }}>
+                    <label className="form-label">无定位时如何处理</label>
+                    <select
+                      className="form-select"
+                      style={{ maxWidth: 280 }}
+                      value={form.location_fallback}
+                      onChange={(e) => setForm({ ...form, location_fallback: e.target.value })}
+                    >
+                      <option value="reject">拒绝签到（严格，防代签最有效）</option>
+                      <option value="allow_flag">允许签到但标记「位置异常」供核对</option>
+                    </select>
+                    <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
+                      用户拒绝授权定位或无 GPS 时：选「拒绝」则直接拒签；选「允许并标记」则放行并在记录里标注异常，由你事后核对。
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="form-group">
               <label className="form-label">签到字段配置</label>
               {form.fields.map((field, i) => (
                 <div key={i} className="field-config-item">
@@ -453,6 +504,11 @@ function SessionDetail({ session, onBack, showToast }) {
   const [maxInput, setMaxInput] = useState(session.max_signins != null ? String(session.max_signins) : '')
   const [savingTime, setSavingTime] = useState(false)
   const [antiPhoto, setAntiPhoto] = useState(!!session.anti_photo)
+  const [locEnabled, setLocEnabled] = useState(!!session.location_enabled)
+  const [locCenterLat, setLocCenterLat] = useState(session.center_lat)
+  const [locCenterLng, setLocCenterLng] = useState(session.center_lng)
+  const [locRadius, setLocRadius] = useState(session.radius_m)
+  const [locFallback, setLocFallback] = useState(session.location_fallback || 'reject')
 
   // 仅超级管理员能看到创建者
   const me = getUser()
@@ -477,6 +533,11 @@ function SessionDetail({ session, onBack, showToast }) {
         expires_at: ea,
         max_signins: maxVal,
         anti_photo: antiPhoto,
+        location_enabled: locEnabled,
+        center_lat: locEnabled ? locCenterLat : null,
+        center_lng: locEnabled ? locCenterLng : null,
+        radius_m: locEnabled ? (parseInt(locRadius, 10) || null) : null,
+        location_fallback: locFallback,
       })
       showToast('时间设置已保存', 'success')
       onBack()
@@ -658,6 +719,9 @@ function SessionDetail({ session, onBack, showToast }) {
           {session.anti_photo && (
             <span className="badge badge-active" style={{ marginLeft: 8 }}>🛡️ 防拍照</span>
           )}
+          {session.location_enabled && (
+            <span className="badge badge-active" style={{ marginLeft: 8 }}>📍 定位限制</span>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               className="btn btn-success btn-sm"
@@ -751,6 +815,44 @@ function SessionDetail({ session, onBack, showToast }) {
               <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
                 开启后二维码有效期按字段数量自动延长（每个字段约 10 秒填写时间），拍照留存/转发仍会迅速过期无法签到；现场扫活码不受影响。
               </p>
+            </div>
+            <div className="form-group" style={{ margin: 0, flexBasis: '100%' }}>
+              <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={locEnabled}
+                  onChange={(e) => setLocEnabled(e.target.checked)}
+                />
+                <span>📍 定位限制（仅允许在指定范围内签到）</span>
+              </label>
+              <p style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 4 }}>
+                开启后，签到者必须位于你设定的中心点半径范围内才能签到（现场围栏，防远程/代签）。
+              </p>
+              {locEnabled && (
+                <div style={{ marginTop: 12 }}>
+                  <LocationPicker
+                    center={locCenterLat != null ? { lat: locCenterLat, lng: locCenterLng } : null}
+                    radius={locRadius}
+                    onChange={({ center, radius }) => {
+                      setLocCenterLat(center.lat)
+                      setLocCenterLng(center.lng)
+                      setLocRadius(radius)
+                    }}
+                  />
+                  <div className="form-group" style={{ marginTop: 12 }}>
+                    <label className="form-label">无定位时如何处理</label>
+                    <select
+                      className="form-select"
+                      style={{ maxWidth: 280 }}
+                      value={locFallback}
+                      onChange={(e) => setLocFallback(e.target.value)}
+                    >
+                      <option value="reject">拒绝签到（严格，防代签最有效）</option>
+                      <option value="allow_flag">允许签到但标记「位置异常」供核对</option>
+                    </select>
+                  </div>
+                </div>
+              )}
             </div>
             <button className="btn btn-primary btn-sm" onClick={handleSaveTime} disabled={savingTime}>
               {savingTime ? '保存中...' : '保存设置'}
@@ -866,24 +968,32 @@ function SessionDetail({ session, onBack, showToast }) {
             <table className="table">
               <thead>
                 <tr>
-                  {records.fields_config.map((f) => (
-                    <th key={f.name}>{f.label}</th>
-                  ))}
-                  <th>签到时间</th>
-                  <th>IP地址</th>
-                </tr>
-              </thead>
-              <tbody>
-                {records.records.map((r) => (
-                  <tr key={r.id}>
-                    {records.fields_config.map((f) => (
-                      <td key={f.name}>{r[f.name]}</td>
-                    ))}
-                    <td>{r.time_str}</td>
-                    <td>{r.ip_address}</td>
-                  </tr>
+                {records.fields_config.map((f) => (
+                  <th key={f.name}>{f.label}</th>
                 ))}
-              </tbody>
+                <th>签到时间</th>
+                <th>IP地址</th>
+                {session.location_enabled && <th>位置异常</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {records.records.map((r) => (
+                <tr key={r.id}>
+                  {records.fields_config.map((f) => (
+                    <td key={f.name}>{r[f.name]}</td>
+                  ))}
+                  <td>{r.time_str}</td>
+                  <td>{r.ip_address}</td>
+                  {session.location_enabled && (
+                    <td>
+                      {r.location_abnormal
+                        ? <span style={{ color: '#cf1322', fontWeight: 600 }}>⚠️ 异常</span>
+                        : <span style={{ color: '#1a7f43' }}>正常</span>}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
             </table>
           </div>
         )}

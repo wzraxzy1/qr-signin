@@ -29,6 +29,22 @@ function getDeviceId() {
   return id
 }
 
+// 获取用户 GPS（WGS-84，浏览器原生坐标系）。开启定位限制时由签到页采集并随提交发送。
+// 拒绝授权 / 设备不支持 / 超时 —— 一律返回 ok:false，由后端按 location_fallback 处理（不阻塞提交）。
+function getGeoPosition() {
+  return new Promise((resolve) => {
+    if (!('geolocation' in navigator)) {
+      resolve({ ok: false, reason: 'unsupported' })
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ ok: true, lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      (err) => resolve({ ok: false, reason: err.code === err.PERMISSION_DENIED ? 'denied' : 'error' }),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+    )
+  })
+}
+
 export default function SignInPage() {
   const [searchParams] = useSearchParams()
   const sessionId = searchParams.get('session')
@@ -55,6 +71,8 @@ export default function SignInPage() {
   // 一人一码：当前 token 是否为名单专属码（绑定身份，不可改）。
   const [isRoster, setIsRoster] = useState(false)
   const [rosterDisplay, setRosterDisplay] = useState('')
+  // 定位状态：开启定位限制时采集 GPS 并随提交发送（status: idle|locating|ok|denied|error|unsupported）
+  const [geo, setGeo] = useState({ status: 'idle', lat: null, lng: null })
 
   // 评估签到时间窗口：未开始/已结束/已关闭 -> 不允许签到
   const evaluateWindow = (data) => {
@@ -127,6 +145,18 @@ export default function SignInPage() {
       .catch(() => fetchSession())  // 接口异常则退回普通表单流程
   }, [sessionId, token, fetchSession, signedKey, bypassWeChat])
 
+  // 开启定位限制时，会话加载完成后即尝试获取 GPS（给定位预热时间，避免提交时才卡顿）。
+  // 拒绝授权 / 设备不支持 / 超时 -> 标记状态，仍允许提交（坐标发 null，由后端按 fallback 处理）。
+  useEffect(() => {
+    if (!session || !session.location_enabled) return
+    if (geo.status !== 'idle') return
+    setGeo({ status: 'locating', lat: null, lng: null })
+    getGeoPosition().then((r) => {
+      if (r.ok) setGeo({ status: 'ok', lat: r.lat, lng: r.lng })
+      else setGeo({ status: r.reason === 'denied' ? 'denied' : 'error', lat: null, lng: null })
+    })
+  }, [session, geo.status])
+
   // 禁止在微信内一键转发/分享签到链接：隐藏微信右上角"···"菜单（含转发、分享入口）。
   // 仅对微信内置浏览器生效；非微信环境 WeixinJSBridge 不存在，调用为 no-op，安全无副作用。
   // 注意：这是"软拦截"——去掉便捷转发按钮，但无法阻止长按复制链接或截图转发；
@@ -178,6 +208,9 @@ export default function SignInPage() {
         token,
         field_data: formData,
         device_id: getDeviceId(),
+        // 开启定位限制时上报 GPS（WGS-84）；未开启或获取失败则为 null（后端按 fallback 处理）
+        lat: session.location_enabled ? geo.lat : null,
+        lng: session.location_enabled ? geo.lng : null,
       })
       if (res.data.status === 'success') {
         localStorage.setItem(signedKey, '1')
@@ -227,6 +260,8 @@ export default function SignInPage() {
         token,
         field_data: {},
         device_id: getDeviceId(),
+        lat: session.location_enabled ? geo.lat : null,
+        lng: session.location_enabled ? geo.lng : null,
       })
       if (res.data.status === 'success') {
         localStorage.setItem(signedKey, '1')
@@ -397,6 +432,16 @@ export default function SignInPage() {
         {errorMsg && !result && (
           <div className="toast error" style={{ position: 'static', transform: 'none', marginBottom: 12 }}>
             {errorMsg}
+          </div>
+        )}
+        {session.location_enabled && (
+          <div className={`geo-badge geo-${geo.status}`}>
+            {geo.status === 'locating' && '📍 正在获取定位...'}
+            {geo.status === 'ok' && '📍 已获取定位，签到时将校验您是否在范围内'}
+            {geo.status === 'denied' && '⚠️ 未能获取定位（请允许定位权限；部分情况下将无法签到）'}
+            {geo.status === 'error' && '⚠️ 定位获取失败'}
+            {geo.status === 'unsupported' && '⚠️ 当前设备/浏览器不支持定位'}
+            {geo.status === 'idle' && '📍 正在准备定位...'}
           </div>
         )}
         <form onSubmit={handleSubmit}>

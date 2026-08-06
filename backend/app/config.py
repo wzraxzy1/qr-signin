@@ -7,6 +7,7 @@
 import os
 import json
 import secrets
+import math
 
 # SECRET_KEY：生产环境（APP_ENV=production）必须显式设置，缺失则拒绝启动，
 # 禁止回退到公开可猜的默认密钥；开发环境未设置时生成临时密钥（进程重启后失效，仅本地可接受）。
@@ -59,6 +60,59 @@ def anti_photo_grace_seconds(fields_config):
     except Exception:
         n = 0
     return ANTI_PHOTO_BASE_GRACE + ANTI_PHOTO_PER_FIELD * n
+
+
+# ==================== 坐标系与地理围栏工具 ====================
+# 浏览器 navigator.geolocation 返回 WGS-84，而国内地图（腾讯/高德/百度）使用 GCJ-02（火星坐标）。
+# 两者在国内相差约数百米，若直接比距离会让紧邻围栏边界的正常用户被错误拒绝。
+# 因此：会话中心按地图标准(GCJ-02)存储；签到时把用户上报的 WGS-84 转成 GCJ-02 再比距离。
+_GCJ02_A = 6378245.0
+_GCJ02_EE = 0.00669342162296594323
+
+
+def _gcj02_transform_lat(x, y):
+    ret = (-100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y
+           + 0.2 * math.sqrt(abs(x)))
+    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(y * math.pi) + 40.0 * math.sin(y / 3.0 * math.pi)) * 2.0 / 3.0
+    ret += (160.0 * math.sin(y / 12.0 * math.pi) + 320.0 * math.sin(y * math.pi / 30.0)) * 2.0 / 3.0
+    return ret
+
+
+def _gcj02_transform_lng(x, y):
+    ret = (300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y
+           + 0.1 * math.sqrt(abs(x)))
+    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(x * math.pi) + 40.0 * math.sin(x / 3.0 * math.pi)) * 2.0 / 3.0
+    ret += (150.0 * math.sin(x / 12.0 * math.pi) + 300.0 * math.sin(x / 30.0 * math.pi)) * 2.0 / 3.0
+    return ret
+
+
+def wgs84_to_gcj02(lat, lng):
+    """WGS-84 → GCJ-02（火星坐标）偏移。国内范围外不偏移，直接原样返回。"""
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):
+        return lat, lng
+    dlat = _gcj02_transform_lat(lng - 105.0, lat - 35.0)
+    dlng = _gcj02_transform_lng(lng - 105.0, lat - 35.0)
+    radlat = lat / 180.0 * math.pi
+    magic = math.sin(radlat)
+    magic = 1 - _GCJ02_EE * magic * magic
+    sqrtmagic = math.sqrt(magic)
+    dlat = (dlat * 180.0) / ((_GCJ02_A * (1 - _GCJ02_EE)) / (magic * sqrtmagic) * math.pi)
+    dlng = (dlng * 180.0) / (_GCJ02_A / sqrtmagic * math.cos(radlat) * math.pi)
+    return lat + dlat, lng + dlng
+
+
+def haversine_meters(lat1, lng1, lat2, lng2):
+    """两点间大圆距离（米）。输入可为 WGS-84 或 GCJ-02，只要两者坐标系一致即可。"""
+    R = 6371000.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = (math.sin(dphi / 2) ** 2
+         + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
+    return 2 * R * math.asin(math.sqrt(a))
 
 # ==================== Login Rate Limiting 常量 ====================
 # 简单内存级登录限流：单实例部署足够；多实例需改为共享存储（如 Redis）。

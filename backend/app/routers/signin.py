@@ -18,7 +18,7 @@ import json
 
 from fastapi import APIRouter, Request, HTTPException
 
-from ..config import TOKEN_GRACE_PERIOD, anti_photo_grace_seconds
+from ..config import TOKEN_GRACE_PERIOD, anti_photo_grace_seconds, wgs84_to_gcj02, haversine_meters
 from ..db import get_db
 from ..schemas import SignInSubmit
 
@@ -53,7 +53,43 @@ class _RejectSignin(Exception):
         self.detail = detail
 
 
-def try_persist_signin(conn, session_row, token, field_data, now, client_ip, device_id="", roster_token=None):
+def _check_location(session_row, lat, lng):
+    """地理围栏校验（服务端权威执行，前端无法绕过）。
+
+    返回 location_abnormal：
+      - False：通过围栏（或本会话未开启定位限制 / 中心点配置缺失导致围栏不生效）
+      - True ：用户无定位/离围栏过远，但按 fallback=allow_flag 放行，需标记供管理员核对。
+    校验不通过（fallback=reject 且无定位 / 超出范围）直接抛 HTTPException(403)。
+    """
+    if not session_row["location_enabled"]:
+        return False
+    center_lat = session_row["center_lat"]
+    center_lng = session_row["center_lng"]
+    radius = session_row["radius_m"]
+    # 中心点配置不完整时围栏无法生效，按「不限制」处理，避免误伤正常签到
+    if center_lat is None or center_lng is None or not radius:
+        return False
+    if lat is None or lng is None:
+        # 用户未上报定位（拒绝授权 / 无 GPS）
+        if session_row["location_fallback"] == "reject":
+            raise HTTPException(
+                status_code=403,
+                detail="无法获取您的位置信息，签到被拒绝（请在微信中允许定位后重试）",
+            )
+        return True  # allow_flag：放行但标记异常
+    # 用户上报的是 WGS-84，中心点是 GCJ-02（腾讯地图标准），
+    # 先把用户坐标转到 GCJ-02 再比距离，消除国内数百米的坐标偏移误差。
+    glat, glng = wgs84_to_gcj02(lat, lng)
+    dist = haversine_meters(glat, glng, center_lat, center_lng)
+    if dist > radius:
+        raise HTTPException(
+            status_code=403,
+            detail="您不在签到范围内，无法签到",
+        )
+    return False
+
+
+def try_persist_signin(conn, session_row, token, field_data, now, client_ip, device_id="", roster_token=None, user_lat=None, user_lng=None, location_abnormal=0):
     """在调用方已开启的写事务内完成 去重 + 人数上限 + INSERT。
 
     不负责 BEGIN/COMMIT——事务边界由 submit_signin 统一控制，以保证原子性。
@@ -101,7 +137,7 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip, dev
             raise _RejectSignin(
                 409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
             )
-        return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id, roster_token)
+        return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id, roster_token, user_lat, user_lng, location_abnormal)
 
     # ---- 多人会话：身份去重 ----
     # 身份候选字段非空值 -> 复合键去重
@@ -123,7 +159,7 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip, dev
                 raise _RejectSignin(
                     409, "该二维码已签到，请勿重复签到（如需重签请重新扫描）"
                 )
-            return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id, roster_token)
+            return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id, roster_token, user_lat, user_lng, location_abnormal)
         key_fields = list(non_empty.keys())
 
     if key_fields:
@@ -158,14 +194,16 @@ def try_persist_signin(conn, session_row, token, field_data, now, client_ip, dev
         if cur.fetchone():
             raise _RejectSignin(409, f"该{label}已签到，请勿重复签到")
 
-    return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id, roster_token)
+    return _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id, roster_token, user_lat, user_lng, location_abnormal)
 
 
-def _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id="", roster_token=None):
+def _insert_signin(conn, session_row, token, field_data, now, client_ip, device_id="", roster_token=None, user_lat=None, user_lng=None, location_abnormal=0):
     """人数上限检查 + INSERT（事务由调用方统一 COMMIT/ROLLBACK）。
 
     人数上限与 INSERT 同处一个写事务，原子执行，杜绝并发超额（TOCTOU 修复点）。
     roster_token：一人一码场景下记录所用专属码，用于"该码已使用"精确判定。
+    user_lat/user_lng：用户上报的 GPS（WGS-84，原样存储）；location_abnormal：
+    定位围栏放行但标记异常（无定位 / 超出范围且 fallback=allow_flag）的标志。
     返回 signin_id。
     """
     cur = conn.cursor()
@@ -180,9 +218,9 @@ def _insert_signin(conn, session_row, token, field_data, now, client_ip, device_
 
     signin_id = str(uuid.uuid4())[:8]
     cur.execute(
-        """INSERT INTO signins (id, session_id, token, field_data, sign_in_time, ip_address, device_id, roster_token)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (signin_id, session_row["id"], token, json.dumps(field_data, ensure_ascii=False), now, client_ip, device_id or None, roster_token),
+        """INSERT INTO signins (id, session_id, token, field_data, sign_in_time, ip_address, device_id, roster_token, user_lat, user_lng, location_abnormal)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (signin_id, session_row["id"], token, json.dumps(field_data, ensure_ascii=False), now, client_ip, device_id or None, roster_token, user_lat, user_lng, 1 if location_abnormal else 0),
     )
     return signin_id
 
@@ -260,13 +298,18 @@ async def submit_signin(session_id: str, data: SignInSubmit, request: Request):
         field_data_for_insert = data.field_data
         roster_token_for_insert = None
 
+    # ============ 地理围栏校验（服务端权威，先于写事务）============
+    # 未开启则不校验；开启但中心点缺失则自动降级不限制；reject 且无定位/超范围 → 403；
+    # allow_flag 且无定位/超范围 → 放行并在记录上标 location_abnormal 供核对。
+    location_abnormal = _check_location(row, data.lat, data.lng)
+
     # ============ 临界区：去重 + 人数上限 + 写入（必须原子提交）============
     # 用 BEGIN IMMEDIATE 在「检查」之前就抢占写锁，彻底消除 TOCTOU 竞态：
     # 两个并发请求不会同时通过 COUNT < max 检查后再各自 INSERT 导致超额 / 重复签到。
     conn.execute("BEGIN IMMEDIATE")
     try:
         client_ip = request.client.host if request.client else "unknown"
-        try_persist_signin(conn, row, token_for_insert, field_data_for_insert, now, client_ip, data.device_id, roster_token_for_insert)
+        try_persist_signin(conn, row, token_for_insert, field_data_for_insert, now, client_ip, data.device_id, roster_token_for_insert, data.lat, data.lng, location_abnormal)
         conn.execute("COMMIT")
         conn.close()
         return {"status": "success", "sign_in_time": now}

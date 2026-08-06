@@ -76,13 +76,24 @@ def _owned_session(cur, session_id: str, user: dict):
 
 @router.post("/api/sessions")
 async def create_session(session: SessionCreate, user: dict = Depends(get_current_user)):
+    # 定位限制：开启时必须提供中心点(经纬度)与半径，否则围栏无意义
+    if session.location_enabled:
+        if session.center_lat is None or session.center_lng is None or not session.radius_m:
+            raise HTTPException(
+                status_code=400,
+                detail="开启定位限制时必须提供中心点经纬度与允许半径(米)",
+            )
+        if session.radius_m <= 0:
+            raise HTTPException(status_code=400, detail="允许半径必须大于 0")
+        if session.location_fallback not in ("reject", "allow_flag"):
+            raise HTTPException(status_code=400, detail="location_fallback 仅支持 reject / allow_flag")
     session_id = str(uuid.uuid4())[:8]
     now = time.time()
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, start_at, expires_at, max_signins, created_by, anti_photo)
-           VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO sessions (id, name, refresh_interval, fields_config, status, created_at, start_at, expires_at, max_signins, created_by, anti_photo, location_enabled, center_lat, center_lng, radius_m, location_fallback)
+           VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             session_id,
             session.name,
@@ -94,6 +105,11 @@ async def create_session(session: SessionCreate, user: dict = Depends(get_curren
             session.max_signins,
             user["uid"],
             1 if session.anti_photo else 0,
+            1 if session.location_enabled else 0,
+            session.center_lat,
+            session.center_lng,
+            session.radius_m,
+            session.location_fallback,
         ),
     )
     conn.commit()
@@ -133,6 +149,11 @@ async def list_sessions(user: dict = Depends(get_current_user)):
             "created_by": row["created_by"],
             "created_by_username": row["creator_username"],
             "anti_photo": bool(row["anti_photo"]),
+            "location_enabled": bool(row["location_enabled"]),
+            "center_lat": row["center_lat"],
+            "center_lng": row["center_lng"],
+            "radius_m": row["radius_m"],
+            "location_fallback": row["location_fallback"],
         })
     conn.close()
     return {"sessions": sessions}
@@ -166,6 +187,11 @@ async def get_session(session_id: str, user: dict = Depends(get_current_user)):
         "created_by_username": creator["username"] if creator else None,
         "sign_in_count": count,
         "anti_photo": bool(row["anti_photo"]),
+        "location_enabled": bool(row["location_enabled"]),
+        "center_lat": row["center_lat"],
+        "center_lng": row["center_lng"],
+        "radius_m": row["radius_m"],
+        "location_fallback": row["location_fallback"],
     }
 
 
@@ -204,6 +230,21 @@ async def update_session(session_id: str, update: SessionUpdate, user: dict = De
     if update.anti_photo is not None:
         updates.append("anti_photo = ?")
         params.append(1 if update.anti_photo else 0)
+    if update.location_enabled is not None:
+        updates.append("location_enabled = ?")
+        params.append(1 if update.location_enabled else 0)
+    if update.center_lat is not None:
+        updates.append("center_lat = ?")
+        params.append(update.center_lat)
+    if update.center_lng is not None:
+        updates.append("center_lng = ?")
+        params.append(update.center_lng)
+    if update.radius_m is not None:
+        updates.append("radius_m = ?")
+        params.append(update.radius_m)
+    if update.location_fallback is not None:
+        updates.append("location_fallback = ?")
+        params.append(update.location_fallback)
 
     if updates:
         params.append(session_id)
@@ -254,6 +295,8 @@ async def get_qr_info(session_id: str, request: Request, user: dict = Depends(ge
         "interval": token_info["interval"],
         "anti_photo": anti_photo,
         "validity_seconds": validity,
+        # 仅告知签到页「是否需要采集定位」，绝不泄露中心点坐标（防围栏被绕过）
+        "location_enabled": bool(row["location_enabled"]),
     }
 
 
@@ -280,6 +323,8 @@ async def get_session_public(session_id: str):
         "expires_at": row["expires_at"],
         "max_signins": row["max_signins"],
         "sign_in_count": count,
+        # 仅告知「是否需采集定位」，绝不泄露中心点坐标（防围栏被绕过）
+        "location_enabled": bool(row["location_enabled"]),
     }
 
 
@@ -306,6 +351,7 @@ async def get_records(session_id: str, user: dict = Depends(get_current_user)):
             "sign_in_time": row["sign_in_time"],
             "time_str": datetime.fromtimestamp(row["sign_in_time"]).strftime("%Y-%m-%d %H:%M:%S"),
             "ip_address": row["ip_address"],
+            "location_abnormal": bool(row["location_abnormal"]),
         }
         for f in fields_config:
             record[f["name"]] = data.get(f["name"], "")
@@ -339,7 +385,7 @@ async def export_records(session_id: str, user: dict = Depends(get_current_user)
     writer = csv.writer(output)
 
     # Header row
-    headers = [f["label"] for f in fields_config] + ["签到时间", "IP地址"]
+    headers = [f["label"] for f in fields_config] + ["签到时间", "IP地址", "位置异常"]
     writer.writerow(headers)
 
     # Data rows
@@ -353,6 +399,7 @@ async def export_records(session_id: str, user: dict = Depends(get_current_user)
             row_data.append(val)
         row_data.append(datetime.fromtimestamp(row["sign_in_time"]).strftime("%Y-%m-%d %H:%M:%S"))
         row_data.append(row["ip_address"])
+        row_data.append("是" if row["location_abnormal"] else "否")
         writer.writerow(row_data)
 
     output.seek(0)

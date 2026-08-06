@@ -130,6 +130,42 @@ def init_db():
         cur.execute("ALTER TABLE roster ADD COLUMN sign_token TEXT")
     except Exception:
         pass  # column already exists
+    # Migration: 定位限制（地理围栏）——开放/无名单会话可要求签到者位于指定范围内。
+    # center_lat/center_lng 按 GCJ-02（腾讯地图标准）存储；radius_m 为允许半径(米)；
+    # location_fallback 定义「用户无定位/拒绝授权」时的策略：reject 拒签 / allow_flag 放行并标记异常。
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN location_enabled INTEGER")
+    except Exception:
+        pass  # column already exists
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN center_lat REAL")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN center_lng REAL")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN radius_m INTEGER")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE sessions ADD COLUMN location_fallback TEXT NOT NULL DEFAULT 'reject'")
+    except Exception:
+        pass  # column already exists
+    # Migration: 签到记录保存用户上报的 GPS（WGS-84）与「位置异常」标记
+    try:
+        cur.execute("ALTER TABLE signins ADD COLUMN user_lat REAL")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE signins ADD COLUMN user_lng REAL")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE signins ADD COLUMN location_abnormal INTEGER")
+    except Exception:
+        pass
     # Create default super admin on first run.
     # 安全基线：禁止回退到可猜测的默认密码（如旧版 "admin123"）。
     # 未设置 DEFAULT_ADMIN_PASSWORD 时，生成一次性随机密码并打印到启动日志（仅显示一次），

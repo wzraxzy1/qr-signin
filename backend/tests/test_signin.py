@@ -47,10 +47,15 @@ def _seed_token(session_id, token_value="TKN", age=0):
     return token_value
 
 
-def _submit(client, session_id, token, field_data, device_id=""):
+def _submit(client, session_id, token, field_data, device_id="", lat=None, lng=None):
+    body = {"token": token, "field_data": field_data, "device_id": device_id}
+    if lat is not None:
+        body["lat"] = lat
+    if lng is not None:
+        body["lng"] = lng
     return client.post(
         f"/api/sessions/{session_id}/signin",
-        json={"token": token, "field_data": field_data, "device_id": device_id},
+        json=body,
     )
 
 
@@ -447,3 +452,71 @@ def test_anti_photo_off_keeps_long_validity(client):
     t_stale = _seed_token(sid, token_value="STL", age=200)
     r_stale = _submit(client, sid, t_stale, {"name": "李四", "phone": "2"})
     assert r_stale.status_code == 403
+
+
+# ==================== 定位限制（地理围栏）===================
+# 中心点取腾讯地图标准的 GCJ-02 坐标；用户上报的是 WGS-84，后端会先转 GCJ-02 再比距离。
+_LOCATION_CENTER = (39.984104, 116.307503)  # 北京某点(GCJ-02)
+
+
+def test_location_within_radius_allowed(client):
+    """上报坐标与中心几乎重合：WGS-84 转 GCJ-02 后偏移 < 半径(5km)，应放行。"""
+    token = _login(client)
+    sid = _create_session(client, token, location_enabled=True,
+                          center_lat=_LOCATION_CENTER[0], center_lng=_LOCATION_CENTER[1],
+                          radius_m=5000, location_fallback="reject")
+    t = _seed_token(sid)
+    r = _submit(client, sid, t, {"name": "张三", "phone": "1"},
+                lat=_LOCATION_CENTER[0], lng=_LOCATION_CENTER[1])
+    assert r.status_code == 200, r.text
+
+
+def test_location_outside_radius_rejected(client):
+    """偏离约 1 度（~111km），远超 5km 围栏 -> 403。"""
+    token = _login(client)
+    sid = _create_session(client, token, location_enabled=True,
+                          center_lat=_LOCATION_CENTER[0], center_lng=_LOCATION_CENTER[1],
+                          radius_m=5000, location_fallback="reject")
+    t = _seed_token(sid)
+    r = _submit(client, sid, t, {"name": "张三", "phone": "1"},
+                lat=_LOCATION_CENTER[0] + 1.0, lng=_LOCATION_CENTER[1])
+    assert r.status_code == 403
+    assert "签到范围" in r.json()["detail"]
+
+
+def test_location_no_coords_reject_policy(client):
+    """开启定位且 fallback=reject，但不带坐标（拒绝授权/无 GPS）-> 403。"""
+    token = _login(client)
+    sid = _create_session(client, token, location_enabled=True,
+                          center_lat=_LOCATION_CENTER[0], center_lng=_LOCATION_CENTER[1],
+                          radius_m=5000, location_fallback="reject")
+    t = _seed_token(sid)
+    r = _submit(client, sid, t, {"name": "张三", "phone": "1"})  # 不带 lat/lng
+    assert r.status_code == 403
+    assert "位置" in r.json()["detail"]
+
+
+def test_location_no_coords_allow_flag(client):
+    """开启定位且 fallback=allow_flag，不带坐标 -> 放行并在记录上标记 location_abnormal=1。"""
+    token = _login(client)
+    sid = _create_session(client, token, location_enabled=True,
+                          center_lat=_LOCATION_CENTER[0], center_lng=_LOCATION_CENTER[1],
+                          radius_m=5000, location_fallback="allow_flag")
+    t = _seed_token(sid)
+    r = _submit(client, sid, t, {"name": "张三", "phone": "1"})  # 不带 lat/lng
+    assert r.status_code == 200, r.text
+    conn = app_module.get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT location_abnormal FROM signins WHERE session_id = ?", (sid,))
+    row = cur.fetchone()
+    conn.close()
+    assert row["location_abnormal"] == 1
+
+
+def test_location_disabled_no_check(client):
+    """未开启定位限制：即使不带坐标也应正常签到（向后兼容）。"""
+    token = _login(client)
+    sid = _create_session(client, token)
+    t = _seed_token(sid)
+    r = _submit(client, sid, t, {"name": "张三", "phone": "1"})
+    assert r.status_code == 200, r.text
