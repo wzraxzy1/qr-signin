@@ -18,8 +18,13 @@ function loadTMap(key) {
     const script = document.createElement('script')
     script.src = `https://map.qq.com/api/gljs?v=1.exp&key=${encodeURIComponent(key)}`
     script.async = true
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error('地图 SDK 加载失败'))
+    // 腾讯对无效 key 也返回 HTTP 200 + 完整 JS（不会触发 onerror），
+    // 所以必须加超时兜底，避免无限「加载中」。
+    const timer = setTimeout(() => {
+      reject(new Error('地图 SDK 加载超时（15s 内未响应，可能网络受限或被拦截）'))
+    }, 15000)
+    script.onload = () => { clearTimeout(timer); resolve() }
+    script.onerror = () => { clearTimeout(timer); reject(new Error('地图 SDK 脚本加载失败（网络或域名拦截）')) }
     document.head.appendChild(script)
   })
   return _sdkPromise
@@ -41,6 +46,7 @@ export default function LocationPicker({ center, radius, onChange }) {
   const circleRef = useRef(null)
   const [mapReady, setMapReady] = useState(false)
   const [mapError, setMapError] = useState(false)
+  const [mapDetail, setMapDetail] = useState('')
   const [localCenter, setLocalCenter] = useState(center || DEFAULT_CENTER)
   const [localRadius, setLocalRadius] = useState(radius && radius > 0 ? radius : 200)
 
@@ -82,6 +88,7 @@ export default function LocationPicker({ center, radius, onChange }) {
   useEffect(() => {
     if (!TMAP_KEY || TMAP_KEY.includes('Please apply')) {
       setMapError(true)
+      setMapDetail('未配置 VITE_TMAP_KEY，已降级为手动填经纬度（GCJ-02）')
       return
     }
     let cancelled = false
@@ -89,22 +96,47 @@ export default function LocationPicker({ center, radius, onChange }) {
       .then(() => {
         if (cancelled || !mapElRef.current) return
         const TMap = window.TMap
-        mapRef.current = new TMap.Map(mapElRef.current, {
-          center: new TMap.LatLng(localCenter.lat, localCenter.lng),
-          zoom: 15,
-        })
-        mapRef.current.on('click', (evt) => {
-          const ll = evt.latLng
-          const c = { lat: ll.lat, lng: ll.lng }
-          setLocalCenter(c)
-          emit(c, localRadius)
+        try {
+          mapRef.current = new TMap.Map(mapElRef.current, {
+            center: new TMap.LatLng(localCenter.lat, localCenter.lng),
+            zoom: 15,
+          })
+          mapRef.current.on('click', (evt) => {
+            const ll = evt.latLng
+            const c = { lat: ll.lat, lng: ll.lng }
+            setLocalCenter(c)
+            emit(c, localRadius)
+            drawCircle()
+          })
           drawCircle()
-        })
-        drawCircle()
-        setMapReady(true)
+          setMapReady(true)
+          // 腾讯对无效/未授权 key：脚本照常 onload，但容器显示鉴权错误文字。
+          // 延时检测容器内的腾讯报错文字，把「静默坏图」转成明确提示。
+          setTimeout(() => {
+            if (cancelled || !mapElRef.current) return
+            const txt = mapElRef.current.innerText || ''
+            if (/抱歉|未授权|无效|鉴权|key\s*错误|key\s*无效/i.test(txt)) {
+              setMapReady(false)
+              setMapError(true)
+              setMapDetail(
+                '腾讯地图返回鉴权错误（容器内显示：「' +
+                  txt.trim().slice(0, 40) +
+                  '…」）。请在腾讯位置服务控制台检查：①该 key 是否已启用「JavaScript API GL」；②「域名白名单」是否包含你的部署域名（测试阶段可留空）；③key 是否复制完整、无多余空格。'
+              )
+            }
+          }, 5000)
+        } catch (e) {
+          if (!cancelled) {
+            setMapError(true)
+            setMapDetail('地图初始化异常：' + (e && e.message ? e.message : String(e)))
+          }
+        }
       })
-      .catch(() => {
-        if (!cancelled) setMapError(true)
+      .catch((err) => {
+        if (!cancelled) {
+          setMapError(true)
+          setMapDetail(err.message)
+        }
       })
     return () => {
       cancelled = true
@@ -143,7 +175,11 @@ export default function LocationPicker({ center, radius, onChange }) {
         <div className="location-map" ref={mapElRef} />
       ) : mapError ? (
         <div className="location-map-fallback">
-          ⚠️ 未配置地图 Key，使用手动输入（坐标请填 <b>GCJ-02</b>，可用腾讯地图坐标拾取器获取）
+          ⚠️ 地图无法加载：{mapDetail || '未配置地图 Key'}。
+          <br />
+          若已配置 key 仍失败，请检查：① 腾讯位置服务控制台该 key 是否启用「JavaScript API GL」；②「域名白名单」是否包含你的部署域名（测试阶段可留空）；③ key 是否复制完整、无多余空格。
+          <br />
+          临时可用下方手动输入（坐标请填 <b>GCJ-02</b>，可用腾讯地图坐标拾取器获取）。
         </div>
       ) : (
         <div className="location-map-fallback">地图加载中...</div>
