@@ -889,3 +889,19 @@ body {
 .geo-locating, .geo-idle { background: #eef3ff; border: 1px solid #b9c8ff; color: #2b54c9; }
 .geo-denied, .geo-error, .geo-unsupported { background: #fff1f0; border: 1px solid #ffb3ad; color: #cf1322; }
 
+/* 定位工具栏（按钮 + 状态徽标） */
+.location-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.location-locate-btn {
+  white-space: nowrap;
+}
+.location-toolbar .geo-badge {
+  margin: 0;
+  flex: 1 1 auto;
+}
+

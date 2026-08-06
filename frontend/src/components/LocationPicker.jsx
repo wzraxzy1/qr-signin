@@ -90,6 +90,7 @@ export default function LocationPicker({ center, radius, onChange }) {
   const [mapReady, setMapReady] = useState(false)
   const [mapError, setMapError] = useState(false)
   const [mapDetail, setMapDetail] = useState('')
+  const [geoStatus, setGeoStatus] = useState('idle') // idle|locating|ok|denied|error|unsupported
   // 用 ref 保存最新中心/半径，避免点击事件闭包拿到旧值（stale closure）导致
   // 画的圈/标记停在初始点、不跟随点击移动。
   const centerRef = useRef(center && typeof center.lat === 'number' ? center : DEFAULT_CENTER)
@@ -155,6 +156,32 @@ export default function LocationPicker({ center, radius, onChange }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [radius])
 
+  // 取用户当前 GPS（WGS-84）→ 转 GCJ-02 → 居中地图 + 画圈 + 图钉 + 上报
+  const locateMe = () => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setGeoStatus('unsupported')
+      return
+    }
+    setGeoStatus('locating')
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const g = wgs84ToGcj02(pos.coords.latitude, pos.coords.longitude)
+        centerRef.current = g
+        setLocalCenter(g)
+        if (mapRef.current) mapRef.current.setCenter(new window.TMap.LatLng(g.lat, g.lng))
+        drawCircle()
+        drawMarker()
+        emit()
+        setGeoStatus('ok')
+      },
+      (err) => {
+        // err.code: 1=拒绝授权 2=不可用 3=超时
+        setGeoStatus(err && err.code === 1 ? 'denied' : 'error')
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    )
+  }
+
   useEffect(() => {
     if (!TMAP_KEY || TMAP_KEY.includes('Please apply')) {
       setMapError(true)
@@ -179,6 +206,7 @@ export default function LocationPicker({ center, radius, onChange }) {
             emit()
             drawCircle()
             drawMarker()
+            setGeoStatus('idle')
           })
           drawCircle()
           drawMarker()
@@ -198,24 +226,9 @@ export default function LocationPicker({ center, radius, onChange }) {
               )
             }
           }, 5000)
-          // 未传入已有中心点 → 尝试定位到用户当前位置（WGS-84 转 GCJ-02 后居中）
-          if (!(center && typeof center.lat === 'number') && navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(
-              (pos) => {
-                if (cancelled) return
-                const g = wgs84ToGcj02(pos.coords.latitude, pos.coords.longitude)
-                centerRef.current = g
-                setLocalCenter(g)
-                if (mapRef.current) mapRef.current.setCenter(new TMap.LatLng(g.lat, g.lng))
-                drawCircle()
-                drawMarker()
-                emit()
-              },
-              () => {
-                /* 定位失败/用户拒绝：保持默认中心，不强制 */
-              },
-              { enableHighAccuracy: true, timeout: 8000 }
-            )
+          // 未传入已有中心点 → 自动尝试定位到用户当前位置（失败不强制）
+          if (!(center && typeof center.lat === 'number')) {
+            locateMe()
           }
         } catch (e) {
           if (!cancelled) {
@@ -271,6 +284,22 @@ export default function LocationPicker({ center, radius, onChange }) {
 
   return (
     <div className="location-picker">
+      <div className="location-toolbar">
+        <button type="button" className="btn-secondary location-locate-btn" onClick={locateMe}>
+          📍 定位到我当前位置
+        </button>
+        {geoStatus === 'locating' && <span className="geo-badge geo-locating">定位中…</span>}
+        {geoStatus === 'ok' && <span className="geo-badge geo-ok">已定位到你附近，可点地图微调</span>}
+        {geoStatus === 'denied' && (
+          <span className="geo-badge geo-denied">已拒绝定位授权，可手动点选地图或填经纬度</span>
+        )}
+        {geoStatus === 'error' && (
+          <span className="geo-badge geo-error">定位失败（需 HTTPS 站点 + 授权），可手动点选</span>
+        )}
+        {geoStatus === 'unsupported' && (
+          <span className="geo-badge geo-unsupported">当前环境不支持定位，可手动点选地图</span>
+        )}
+      </div>
       {/* 地图容器必须始终存在于 DOM（初始化时 mapReady 还是 false，
           若条件渲染则 ref 为 null，new TMap.Map(null) 会让地图永远出不来）。
           加载中/报错以浮层覆盖在地图上方。 */}
