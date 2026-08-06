@@ -178,12 +178,6 @@ export default function QRDisplay() {
           {countdown < 1 && ' · 正在刷新...'}
         </div>
 
-        {qrData.anti_photo && (
-          <div className="qr-antiphoto-hint">
-            🛡️ 防拍照模式：二维码约 <strong>{qrData.validity_seconds}</strong> 秒内有效（已按字段数量自动延长填写时间），拍照留存或转发给他人会迅速过期、无法签到。请现场扫描屏幕上当前显示的活码。
-          </div>
-        )}
-
         <div className="qr-instructions">
           📱 请使用手机扫描上方二维码完成签到<br />
           二维码过期后需重新扫描最新二维码
